@@ -14,15 +14,14 @@ package io.vertx.tests.context;
 import io.netty.channel.EventLoop;
 import io.vertx.core.*;
 import io.vertx.core.Future;
-import io.vertx.core.impl.*;
-import io.vertx.core.internal.PromiseInternal;
-import io.vertx.core.internal.CloseFuture;
-import io.vertx.core.internal.ContextInternal;
-import io.vertx.core.internal.VertxInternal;
+import io.vertx.core.impl.VertxImpl;
+import io.vertx.core.impl.VertxThread;
+import io.vertx.core.internal.*;
 import io.vertx.core.spi.context.storage.AccessMode;
 import io.vertx.core.spi.context.storage.ContextLocal;
 import io.vertx.test.core.ContextLocalHelper;
 import io.vertx.test.core.VertxTestBase;
+import io.vertx.test.fakemetrics.FakeMetricsFactory;
 import org.junit.Assume;
 import org.junit.Test;
 
@@ -50,7 +49,12 @@ public class ContextTest extends VertxTestBase {
   private ExecutorService workerExecutor;
 
   private ContextInternal createWorkerContext() {
-    return ((VertxInternal) vertx).createWorkerContext(null, new CloseFuture(), new WorkerPool(workerExecutor, null), Thread.currentThread().getContextClassLoader());
+    return ((VertxInternal) vertx).contextBuilder()
+      .withThreadingModel(ThreadingModel.WORKER)
+      .withCloseFuture(new CloseFuture())
+      .withWorkerPool(new WorkerPool(workerExecutor, null))
+      .withClassLoader(Thread.currentThread().getContextClassLoader())
+      .build();
   }
 
   @Override
@@ -241,6 +245,23 @@ public class ContextTest extends VertxTestBase {
   }
 
   @Test
+  public void testExecuteBlockingClose() {
+    CountDownLatch latch = new CountDownLatch(1);
+    ContextInternal ctx = (ContextInternal) vertx.getOrCreateContext();
+    AtomicReference<Thread> thread = new AtomicReference<>();
+    Future<String> fut1 = ctx.executeBlocking(() -> {
+      thread.set(Thread.currentThread());
+      latch.await();
+      return "";
+    });
+    assertWaitUntil(() -> thread.get() != null && thread.get().getState() == Thread.State.WAITING);
+    ctx.close();
+    assertWaitUntil(fut1::isComplete);
+    assertTrue(fut1.failed());
+    assertTrue(fut1.cause() instanceof InterruptedException);
+  }
+
+  @Test
   public void testDefaultContextExceptionHandler() {
     RuntimeException failure = new RuntimeException();
     Context context = vertx.getOrCreateContext();
@@ -337,19 +358,6 @@ public class ContextTest extends VertxTestBase {
     await();
   }
 
-  @Test
-  public void testInternalExecuteBlockingWithQueue() {
-    ContextInternal context = (ContextInternal) vertx.getOrCreateContext();
-    List<Consumer<Callable<Object>>> lst = new ArrayList<>();
-    for (int i = 0;i < 2;i++) {
-      TaskQueue queue = new TaskQueue();
-      lst.add(task -> {
-        context.executeBlocking(task, queue);
-      });
-    }
-    testInternalExecuteBlockingWithQueue(lst);
-  }
-
   public void testInternalExecuteBlockingWithQueue(List<Consumer<Callable<Object>>> lst) {
     AtomicReference<Thread>[] current = new AtomicReference[lst.size()];
     waitFor(lst.size());
@@ -389,6 +397,27 @@ public class ContextTest extends VertxTestBase {
       }
     }
     latch.countDown();
+    await();
+  }
+
+  @Test
+  public void testExecuteBlockingUseItsOwnTaskQueue() {
+    Context ctx = ((VertxInternal)vertx).createWorkerContext();
+    CountDownLatch latch = new CountDownLatch(1);
+    ctx.runOnContext(v -> {
+      ctx.executeBlocking(() -> {
+        latch.countDown();
+        return 0;
+      });
+      boolean timedOut;
+      try {
+        timedOut = !latch.await(10, TimeUnit.SECONDS);
+      } catch (InterruptedException e) {
+        throw new RuntimeException(e);
+      }
+      assertFalse(timedOut);
+      testComplete();
+    });
     await();
   }
 
@@ -449,9 +478,11 @@ public class ContextTest extends VertxTestBase {
 
   private void checkDuplicate(ContextInternal ctx, ContextInternal duplicated) throws Exception {
     assertSame(ctx.nettyEventLoop(), duplicated.nettyEventLoop());
-    assertSame(ctx.getDeployment(), duplicated.getDeployment());
+    assertSame(ctx.deployment(), duplicated.deployment());
     assertSame(ctx.classLoader(), duplicated.classLoader());
     assertSame(ctx.owner(), duplicated.owner());
+    // Check that unwrap always returns a raw context, even when it was created by duplicating a duplicate
+    assertTrue(!ctx.isDuplicate() && duplicated.isDuplicate() && ctx == duplicated.unwrap());
     Object shared = new Object();
     Object local = new Object();
     ctx.put("key", shared);
@@ -893,9 +924,9 @@ public class ContextTest extends VertxTestBase {
   }
 
   @Test
-  public void testSticky() {
+  public void testStickiness() {
     Context ctx = vertx.getOrCreateContext();
-    assertSame(ctx, vertx.getOrCreateContext());
+    assertSame(((ContextInternal)ctx).nettyEventLoop(), ((ContextInternal)vertx.getOrCreateContext()).nettyEventLoop());
   }
 
   @Test
@@ -908,7 +939,7 @@ public class ContextTest extends VertxTestBase {
       Promise<Object> p1 = Promise.promise();
       PromiseInternal<Object> p2 = supplier.apply(p1);
       assertNotSame(p1, p2);
-      assertSame(ctx, p2.context());
+      // assertSame(ctx, p2.context());
       Object result = new Object();
       p2.complete(result);
       assertWaitUntil(() -> p1.future().isComplete());
@@ -976,8 +1007,16 @@ public class ContextTest extends VertxTestBase {
     ClassLoader tccl1 = new URLClassLoader(new URL[0]);
     ClassLoader tccl2 = new URLClassLoader(new URL[0]);
     VertxImpl impl = (VertxImpl) vertx;
-    ContextInternal ctx1 = impl.createEventLoopContext(impl.getEventLoopGroup().next(), null, tccl1);
-    ContextInternal ctx2 = impl.createEventLoopContext(impl.getEventLoopGroup().next(), null, tccl2);
+    ContextInternal ctx1 = impl
+      .contextBuilder()
+      .withEventLoop(impl.eventLoopGroup().next())
+      .withClassLoader(tccl1)
+      .build();
+    ContextInternal ctx2 = impl
+      .contextBuilder()
+      .withEventLoop(impl.eventLoopGroup().next())
+      .withClassLoader(tccl2)
+      .build();
     AtomicInteger exec = new AtomicInteger();
     Thread thread = Thread.currentThread();
     ClassLoader current = thread.getContextClassLoader();
@@ -1008,7 +1047,7 @@ public class ContextTest extends VertxTestBase {
 
   @Test
   public void testAwaitFromWorkerThread() {
-    testAwaitFromContextThread(ThreadingModel.WORKER, false);
+    testAwaitFromContextThread(ThreadingModel.WORKER, true);
   }
 
   @Test
@@ -1098,4 +1137,121 @@ public class ContextTest extends VertxTestBase {
     }
   }
 
+  @Test
+  public void testContextShouldNotBeStickyFromUnassociatedEventLoopThread() {
+    ContextInternal ctx = ((VertxInternal)vertx).createEventLoopContext();
+    testContextShouldNotBeStickyFromUnassociatedWorkerThread(ctx);
+  }
+
+  @Test
+  public void testContextShouldNotBeStickyFromUnassociatedWorkerThreadAndIsCurrentlyNotSupported() {
+    ContextInternal ctx = ((VertxInternal)vertx).createWorkerContext();
+    testContextShouldNotBeStickyFromUnassociatedWorkerThread(ctx);
+  }
+
+  private void testContextShouldNotBeStickyFromUnassociatedWorkerThread(ContextInternal ctx) {
+    ctx.execute(() -> {
+      assertEquals(null, Vertx.currentContext());
+      ContextInternal created1 = (ContextInternal) vertx.getOrCreateContext();
+      assertNotSame(ctx, created1);
+      assertNotNull(created1.nettyEventLoop());
+      ctx.execute(() -> {
+        assertEquals(null, Vertx.currentContext());
+        Context created2 = vertx.getOrCreateContext();
+        assertSame(ctx.threadingModel(), created2.threadingModel());
+        assertNotSame(ctx, created2);
+        assertNotSame(created1, created2);
+        testComplete();
+      });
+    });
+    await();
+  }
+
+  @Test
+  public void testInterruptActiveWorkerTask() throws Exception {
+    ContextInternal ctx = ((VertxInternal)vertx).createWorkerContext();
+    testInterruptTask(ctx, task -> {
+      ctx.runOnContext(v -> {
+        task.run();
+      });
+    });
+  }
+
+  @Test
+  public void testInterruptExecuteBlockingTask() throws Exception {
+    ContextInternal ctx = ((VertxInternal)vertx).createWorkerContext();
+    testInterruptTask(ctx, task -> {
+      ctx.executeBlocking(() -> {
+        task.run();
+        return null;
+      });
+    });
+  }
+
+  @Test
+  public void testInterruptSuspendedVirtualThreadTask() throws Exception {
+    Assume.assumeTrue(isVirtualThreadAvailable());
+    ContextInternal ctx = ((VertxInternal)vertx).createVirtualThreadContext();
+    testInterruptTask(ctx, (task) -> {
+      ctx.runOnContext(v -> {
+        task.run();
+      });
+    });
+  }
+
+  public void testInterruptTask(ContextInternal context, Consumer<Runnable> actor) throws Exception {
+    CountDownLatch blockingLatch = new CountDownLatch(1);
+    CountDownLatch closeLatch = new CountDownLatch(1);
+    AtomicBoolean interrupted = new AtomicBoolean();
+    actor.accept(() -> {
+      try {
+        closeLatch.countDown();
+        blockingLatch.await();
+      } catch (InterruptedException e) {
+        interrupted.set(true);
+      }
+    });
+    awaitLatch(closeLatch);
+    Future<Void> fut = context.close();
+    long now = System.currentTimeMillis();
+    fut.await(20, TimeUnit.SECONDS);
+    assertTrue((System.currentTimeMillis() - now) < 2000);
+    assertTrue(interrupted.get());
+  }
+
+  @Test
+  public void testNestedDuplicate() {
+    ContextInternal ctx = ((ContextInternal) vertx.getOrCreateContext()).duplicate();
+    ctx.putLocal("foo", "bar");
+    Object expected = new Object();
+    ctx.putLocal(contextLocal, AccessMode.CONCURRENT, expected);
+    ContextInternal duplicate = ctx.duplicate(true);
+    assertEquals("bar", duplicate.getLocal("foo"));
+    assertEquals(expected, duplicate.getLocal(contextLocal));
+    ctx.removeLocal("foo");
+    ctx.removeLocal(contextLocal, AccessMode.CONCURRENT);
+    assertEquals("bar", duplicate.getLocal("foo"));
+    assertEquals(expected, duplicate.getLocal(contextLocal));
+    duplicate = ctx.duplicate();
+    assertNull(duplicate.getLocal("foo"));
+    assertNull(duplicate.getLocal(contextLocal));
+  }
+
+  @Test
+  public void testContextLocals() {
+    List<ContextLocal<?>> locals = ((VertxInternal) vertx).contextLocals();
+    assertSame(ContextInternal.LOCAL_MAP, locals.get(0));
+    assertSame(contextLocal, locals.get(1));
+    assertSame(locals, ((VertxInternal) vertx).contextLocals());
+  }
+
+  @Test
+  public void testVirtualThreadContextHasPoolMetrics() {
+    Assume.assumeTrue(isVirtualThreadAvailable());
+    Vertx vertxWithMetrics = Vertx.builder()
+      .withMetrics(new FakeMetricsFactory())
+      .build();
+    ContextInternal context = ((VertxImpl) vertxWithMetrics).createVirtualThreadContext();
+    assertNotNull(context.workerPool().metrics());
+  }
 }

@@ -11,7 +11,18 @@
 
 package io.vertx.test.fakemetrics;
 
-import io.vertx.core.metrics.Measured;
+import io.vertx.core.Vertx;
+import io.vertx.core.datagram.DatagramSocket;
+import io.vertx.core.eventbus.EventBus;
+import io.vertx.core.http.HttpClientAgent;
+import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.WebSocketClient;
+import io.vertx.core.http.impl.quic.QuicHttpClientTransport;
+import io.vertx.core.http.impl.tcp.TcpHttpClientTransport;
+import io.vertx.core.http.impl.tcp.TcpHttpServer;
+import io.vertx.core.internal.http.HttpClientInternal;
+import io.vertx.core.internal.http.HttpServerInternal;
+import io.vertx.core.net.QuicEndpoint;
 import io.vertx.core.spi.metrics.Metrics;
 import io.vertx.core.spi.metrics.MetricsProvider;
 import junit.framework.AssertionFailedError;
@@ -25,8 +36,68 @@ public class FakeMetricsBase implements Metrics {
 
   private boolean closed;
 
-  public static <M extends FakeMetricsBase> M getMetrics(Measured measured) {
-    return (M) ((MetricsProvider) measured).getMetrics();
+  public boolean isClosed() {
+    return closed;
+  }
+
+  public static FakeQuicEndpointMetrics quicMetricsOf(QuicEndpoint measured) {
+    return (FakeQuicEndpointMetrics) ((MetricsProvider) measured).getMetrics();
+  }
+
+  public static FakeHttpServerMetrics httpMetricsOf(HttpServer measured) {
+    return (FakeHttpServerMetrics) ((MetricsProvider) measured).getMetrics();
+  }
+
+  public static FakeTCPMetrics tpcMetricsOf(HttpServer server) {
+    return (FakeTCPMetrics) ((TcpHttpServer)((HttpServerInternal)server).unwrap()).tcpServer().getMetrics();
+  }
+
+  public static FakeTCPMetrics tpcMetricsOf(HttpClientAgent client) {
+    TcpHttpClientTransport tcpTransport = (TcpHttpClientTransport) ((HttpClientInternal) client).tcpTransport();
+    if (tcpTransport != null) {
+      return (FakeTCPMetrics) tcpTransport.client().getMetrics();
+    }
+    return null;
+  }
+
+  public static FakeQuicEndpointMetrics quicMetricsOf(HttpClientAgent client) {
+    QuicHttpClientTransport quicTransport = (QuicHttpClientTransport) ((HttpClientInternal) client).quicTransport();
+    if (quicTransport != null) {
+      return (FakeQuicEndpointMetrics) quicTransport.client().getMetrics();
+    }
+    return null;
+  }
+
+  public static FakeTransportMetrics transportMetricsOf(HttpClientAgent client) {
+    FakeTransportMetrics metrics = tpcMetricsOf(client);
+    if (metrics == null) {
+      metrics = quicMetricsOf(client);
+    }
+    return metrics;
+  }
+
+  public static FakeEventBusMetrics eventBusMetricsOf(EventBus measured) {
+    return (FakeEventBusMetrics) ((MetricsProvider) measured).getMetrics();
+  }
+
+  public static FakeHttpClientMetrics httpMetricsOf(HttpClientAgent measured) {
+    return (FakeHttpClientMetrics) ((MetricsProvider) measured).getMetrics();
+  }
+
+  public static FakeWebSocketMetrics webSocketMetricsOf(HttpServer measured) {
+    return (FakeWebSocketMetrics) ((MetricsProvider) measured).getMetrics();
+  }
+
+  public static FakeWebSocketMetrics webSocketMetricsOf(WebSocketClient measured) {
+    return (FakeWebSocketMetrics) ((MetricsProvider) measured).getMetrics();
+  }
+
+  public static FakeDatagramSocketMetrics datagramSocketMetricsOf(DatagramSocket measured) {
+    return (FakeDatagramSocketMetrics) ((MetricsProvider) measured).getMetrics();
+  }
+
+  public static FakeVertxMetrics vertxMetricsOf(Vertx measured) {
+    return (FakeVertxMetrics) ((MetricsProvider) measured).getMetrics();
   }
 
   public FakeMetricsBase() {

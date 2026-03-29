@@ -15,6 +15,8 @@ import io.vertx.codegen.annotations.GenIgnore;
 import io.vertx.codegen.annotations.VertxGen;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
+import io.vertx.core.net.ClientSSLOptions;
+import io.vertx.core.net.SSLEngineOptions;
 import io.vertx.core.net.endpoint.LoadBalancer;
 import io.vertx.core.net.AddressResolver;
 
@@ -37,12 +39,36 @@ public interface HttpClientBuilder {
   HttpClientBuilder with(HttpClientOptions options);
 
   /**
+   * Configure the client.
+   * @param config the client config
+   * @return a reference to this, so the API can be used fluently
+   */
+  @Fluent
+  HttpClientBuilder with(HttpClientConfig config);
+
+  /**
    * Configure the client with the given pool {@code options}.
    * @param options the pool options
    * @return a reference to this, so the API can be used fluently
    */
   @Fluent
   HttpClientBuilder with(PoolOptions options);
+
+  /**
+   * Configure the client with the given SSL {@code options}.
+   * @param options the SSL options
+   * @return a reference to this, so the API can be used fluently
+   */
+  @Fluent
+  HttpClientBuilder with(ClientSSLOptions options);
+
+  /**
+   * Configure the client with the given SSL {@code engine}.
+   * @param engine the SSL engine options
+   * @return a reference to this, so the API can be used fluently
+   */
+  @Fluent
+  HttpClientBuilder with(SSLEngineOptions engine);
 
   /**
    * Set a connection handler for the client. This handler is called when a new connection is established.
@@ -75,12 +101,12 @@ public interface HttpClientBuilder {
   HttpClientBuilder withRedirectHandler(Function<HttpClientResponse, Future<RequestOptions>> handler);
 
   /**
-   * Configure the client to use a specific address lookup.
+   * Configure the client to use a specific address resolver.
    *
-   * @param lookup the address lookup
+   * @param resolver the address resolver
    */
   @GenIgnore(GenIgnore.PERMITTED_TYPE)
-  HttpClientBuilder withAddressResolver(AddressResolver lookup);
+  HttpClientBuilder withAddressResolver(AddressResolver<?> resolver);
 
   /**
    * Configure the client to use a load balancer.

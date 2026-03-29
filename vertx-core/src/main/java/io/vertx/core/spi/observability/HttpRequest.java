@@ -12,6 +12,7 @@ package io.vertx.core.spi.observability;
 
 import io.vertx.core.MultiMap;
 import io.vertx.core.http.HttpMethod;
+import io.vertx.core.http.HttpVersion;
 import io.vertx.core.net.SocketAddress;
 
 /**
@@ -23,8 +24,15 @@ public interface HttpRequest {
 
   /**
    * @return the stream id
+   * @deprecated the id cannot be guaranteed to be a stable value, it cannot be used for correlation purpose
    */
-  int id();
+  @Deprecated(forRemoval = true)
+  long id();
+
+  /**
+   * @return the request version
+   */
+  HttpVersion version();
 
   /**
    * @return the request URI

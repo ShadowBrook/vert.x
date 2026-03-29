@@ -14,25 +14,16 @@ package io.vertx.core.impl.transports;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
-import io.netty.channel.epoll.Epoll;
-import io.netty.channel.epoll.EpollChannelOption;
-import io.netty.channel.epoll.EpollDatagramChannel;
-import io.netty.channel.epoll.EpollDomainSocketChannel;
-import io.netty.channel.epoll.EpollEventLoopGroup;
-import io.netty.channel.epoll.EpollServerDomainSocketChannel;
-import io.netty.channel.epoll.EpollServerSocketChannel;
-import io.netty.channel.epoll.EpollSocketChannel;
+import io.netty.channel.epoll.*;
 import io.netty.channel.socket.DatagramChannel;
 import io.netty.channel.socket.InternetProtocolFamily;
 import io.netty.channel.unix.DomainSocketAddress;
 import io.vertx.core.datagram.DatagramSocketOptions;
-import io.vertx.core.net.ClientOptionsBase;
-import io.vertx.core.net.NetServerOptions;
+import io.vertx.core.net.TcpConfig;
 import io.vertx.core.net.impl.SocketAddressImpl;
 import io.vertx.core.spi.transport.Transport;
 
 import java.net.SocketAddress;
-import java.util.concurrent.ThreadFactory;
 
 /**
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
@@ -98,20 +89,18 @@ public class EpollTransport implements Transport {
   }
 
   @Override
-  public EventLoopGroup eventLoopGroup(int type, int nThreads, ThreadFactory threadFactory, int ioRatio) {
-    EpollEventLoopGroup eventLoopGroup = new EpollEventLoopGroup(nThreads, threadFactory);
-    eventLoopGroup.setIoRatio(ioRatio);
-    return eventLoopGroup;
-  }
-
-  @Override
-  public DatagramChannel datagramChannel() {
-    return new EpollDatagramChannel();
+  public IoHandlerFactory ioHandlerFactory() {
+    return EpollIoHandler.newFactory();
   }
 
   @Override
   public DatagramChannel datagramChannel(InternetProtocolFamily family) {
     return new EpollDatagramChannel();
+  }
+
+  @Override
+  public ChannelFactory<? extends DatagramChannel> datagramChannelFactory() {
+    return EpollDatagramChannel::new;
   }
 
   @Override
@@ -137,12 +126,13 @@ public class EpollTransport implements Transport {
   }
 
   @Override
-  public void configure(NetServerOptions options, boolean domainSocket, ServerBootstrap bootstrap) {
+  public void configure(TcpConfig options, boolean domainSocket, ServerBootstrap bootstrap) {
     if (!domainSocket) {
       bootstrap.option(EpollChannelOption.SO_REUSEPORT, options.isReusePort());
       if (options.isTcpFastOpen()) {
         bootstrap.option(ChannelOption.TCP_FASTOPEN, options.isTcpFastOpen() ? pendingFastOpenRequestsThreshold : 0);
       }
+      bootstrap.childOption(EpollChannelOption.TCP_USER_TIMEOUT, options.getTcpUserTimeout());
       bootstrap.childOption(EpollChannelOption.TCP_QUICKACK, options.isTcpQuickAck());
       bootstrap.childOption(EpollChannelOption.TCP_CORK, options.isTcpCork());
     }
@@ -150,7 +140,7 @@ public class EpollTransport implements Transport {
   }
 
   @Override
-  public void configure(ClientOptionsBase options, int connectTimeout, boolean domainSocket, Bootstrap bootstrap) {
+  public void configure(TcpConfig options, boolean domainSocket, Bootstrap bootstrap) {
     if (!domainSocket) {
       if (options.isTcpFastOpen()) {
         bootstrap.option(ChannelOption.TCP_FASTOPEN_CONNECT, options.isTcpFastOpen());
@@ -159,6 +149,6 @@ public class EpollTransport implements Transport {
       bootstrap.option(EpollChannelOption.TCP_QUICKACK, options.isTcpQuickAck());
       bootstrap.option(EpollChannelOption.TCP_CORK, options.isTcpCork());
     }
-    Transport.super.configure(options, connectTimeout, domainSocket, bootstrap);
+    Transport.super.configure(options, domainSocket, bootstrap);
   }
 }

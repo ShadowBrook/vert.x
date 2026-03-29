@@ -11,6 +11,7 @@
 
 package io.vertx.core.net;
 
+import io.vertx.codegen.annotations.DataObject;
 import io.vertx.codegen.annotations.VertxGen;
 import io.vertx.core.net.impl.SelfSignedCertificateImpl;
 
@@ -20,8 +21,10 @@ import io.vertx.core.net.impl.SelfSignedCertificateImpl;
  * While it helps for testing and development, it should never ever be used in production settings.
  *
  * @author <a href="https://julien.ponge.org/">Julien Ponge</a>
+ * @deprecated this class does not work reliably and consistently on stock Java distributions
  */
-@VertxGen
+@Deprecated(forRemoval = true)
+@DataObject
 public interface SelfSignedCertificate {
 
   /**

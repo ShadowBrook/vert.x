@@ -1,0 +1,280 @@
+package io.vertx.core.http.impl.http2.codec;
+
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufHolder;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.ChannelPipeline;
+import io.netty.handler.codec.TooLongFrameException;
+import io.netty.handler.codec.http.FullHttpResponse;
+import io.netty.handler.codec.http.HttpClientCodec;
+import io.netty.handler.codec.http.HttpClientUpgradeHandler;
+import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpHeaderValues;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import io.netty.util.ReferenceCountUtil;
+import io.vertx.core.Promise;
+import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.Http2ClientConfig;
+import io.vertx.core.http.Http2Settings;
+import io.vertx.core.http.impl.http1.Http1ClientConnection;
+import io.vertx.core.http.impl.tcp.Http2UpgradeClientConnection;
+import io.vertx.core.http.impl.HttpClientConnection;
+import io.vertx.core.http.impl.HttpClientStream;
+import io.vertx.core.http.impl.HttpRequestHead;
+import io.vertx.core.http.impl.HttpResponseHead;
+import io.vertx.core.http.impl.tcp.VertxHttp2ClientUpgradeCodec;
+import io.vertx.core.http.impl.http2.Http2ClientChannelInitializer;
+import io.vertx.core.internal.ContextInternal;
+import io.vertx.core.internal.PromiseInternal;
+import io.vertx.core.net.HostAndPort;
+import io.vertx.core.spi.metrics.ClientMetrics;
+import io.vertx.core.spi.metrics.TransportMetrics;
+import io.vertx.core.tracing.TracingPolicy;
+
+import java.time.Duration;
+import java.util.ArrayDeque;
+import java.util.Deque;
+
+import static io.vertx.core.http.impl.tcp.Http2UpgradeClientConnection.SEND_BUFFERED_MESSAGES_EVENT;
+
+public class Http2CodecClientChannelInitializer implements Http2ClientChannelInitializer {
+
+  private final Http2Settings initialSettings;
+  private final TracingPolicy tracingPolicy;
+  private final boolean useDecompression;
+  private final boolean logActivity;
+  private final int multiplexingLimit;
+  private final Duration keepAliveTimeout;
+  private final int upgradeMaxContentLength;
+
+  public Http2CodecClientChannelInitializer(Http2Settings initialSettings, TracingPolicy tracingPolicy, boolean useDecompression,
+                                            boolean logActivity, int multiplexingLimit, Duration keepAliveTimeout, int maxUpgradeContentLength) {
+    this.tracingPolicy = tracingPolicy;
+    this.useDecompression = useDecompression;
+    this.logActivity = logActivity;
+    this.initialSettings = initialSettings;
+    this.multiplexingLimit = multiplexingLimit;
+    this.keepAliveTimeout = keepAliveTimeout;
+    this.upgradeMaxContentLength = maxUpgradeContentLength;
+  }
+
+  @Override
+  public Http2UpgradeClientConnection.Http2ChannelUpgrade channelUpgrade(Http1ClientConnection conn, ClientMetrics<?, ?, ?> clientMetrics) {
+    return new CodecChannelUpgrade(conn.metrics(), clientMetrics, conn.metric(), tracingPolicy, useDecompression, logActivity, multiplexingLimit, keepAliveTimeout);
+  }
+
+  @Override
+  public void http2Connected(ContextInternal context, HostAndPort authority, TransportMetrics<?> transportMetrics, Object metric, Channel ch,
+                             ClientMetrics<?, ?, ?> clientMetrics, PromiseInternal<HttpClientConnection> promise) {
+    VertxHttp2ConnectionHandler<Http2ClientConnectionImpl> clientHandler;
+    try {
+      clientHandler = Http2ClientConnectionImpl.createHttp2ConnectionHandler(initialSettings, tracingPolicy,
+        useDecompression, logActivity, multiplexingLimit, keepAliveTimeout, transportMetrics,
+        clientMetrics, context, metric, authority);
+      ch.pipeline().addLast("handler", clientHandler);
+      ch.flush();
+    } catch (Exception e) {
+      connectFailed(ch, e, promise);
+      return;
+    }
+    clientHandler.connectFuture().addListener(promise);
+  }
+
+  private void connectFailed(Channel ch, Throwable t, Promise<HttpClientConnection> future) {
+    if (ch != null) {
+      try {
+        ch.close();
+      } catch (Exception ignore) {
+      }
+    }
+    future.tryFail(t);
+  }
+
+  public class CodecChannelUpgrade implements Http2UpgradeClientConnection.Http2ChannelUpgrade {
+
+    private final TransportMetrics<?> transportMetrics;
+    private final ClientMetrics clientMetrics;
+//    private final Http2ClientConfig config;
+    private final TracingPolicy tracingPolicy;
+    private final boolean useDecompression;
+    private final boolean logActivity;
+    private final int multiplexingLimit;
+    private final Duration keepAliveTimeout;
+    private final Object connectionMetric;
+
+    public CodecChannelUpgrade(TransportMetrics<?> transportMetrics,
+                               ClientMetrics clientMetrics,
+                               Object connectionMetric,
+                               TracingPolicy tracingPolicy,
+                               boolean useDecompression,
+                               boolean logActivity,
+                               int multiplexingLimit,
+                               Duration keepAliveTimeout) {
+      this.clientMetrics = clientMetrics;
+      this.multiplexingLimit = multiplexingLimit;
+      this.keepAliveTimeout = keepAliveTimeout;
+      this.tracingPolicy = tracingPolicy;
+      this.useDecompression = useDecompression;
+      this.logActivity = logActivity;
+      this.transportMetrics = transportMetrics;
+      this.connectionMetric = connectionMetric;
+    }
+
+    public void upgrade(HttpClientStream upgradingStream, HttpRequestHead request,
+                        Buffer content,
+                        boolean end,
+                        Channel channel,
+                        ClientMetrics<?, ?, ?> clientMetrics, Http2UpgradeClientConnection.UpgradeResult result) {
+      ChannelPipeline pipeline = channel.pipeline();
+      HttpClientCodec httpCodec = pipeline.get(HttpClientCodec.class);
+
+      class UpgradeRequestHandler extends ChannelInboundHandlerAdapter {
+        @Override
+        public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
+          super.userEventTriggered(ctx, evt);
+          ChannelPipeline pipeline = ctx.pipeline();
+          if (evt instanceof HttpClientUpgradeHandler.UpgradeEvent) {
+            switch ((HttpClientUpgradeHandler.UpgradeEvent)evt) {
+              case UPGRADE_SUCCESSFUL:
+                // Remove Http1xClientConnection handler
+                pipeline.remove("handler");
+                // Go through
+              case UPGRADE_REJECTED:
+                // Remove this handler
+                pipeline.remove(this);
+                // Upgrade handler will remove itself and remove the HttpClientCodec
+                result.upgradeRejected();
+                break;
+            }
+          }
+        }
+
+        @Override
+        public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+          if (msg instanceof HttpResponseHead) {
+            pipeline.remove(this);
+            HttpResponseHead resp = (HttpResponseHead) msg;
+            if (resp.statusCode != HttpResponseStatus.SWITCHING_PROTOCOLS.code()) {
+              // Insert the close headers to let the HTTP/1 stream close the connection
+              resp.headers.set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
+            }
+          }
+          super.channelRead(ctx, msg);
+        }
+      }
+
+      VertxHttp2ClientUpgradeCodec upgradeCodec = new VertxHttp2ClientUpgradeCodec(initialSettings) {
+        @Override
+        public void upgradeTo(ChannelHandlerContext ctx, FullHttpResponse upgradeResponse) throws Exception {
+
+          // Now we need to upgrade this to an HTTP2
+          VertxHttp2ConnectionHandler<Http2ClientConnectionImpl> handler = Http2ClientConnectionImpl.createHttp2ConnectionHandler(
+            initialSettings,
+            tracingPolicy,
+            useDecompression,
+            logActivity,
+            multiplexingLimit,
+            keepAliveTimeout,
+            CodecChannelUpgrade.this.transportMetrics,
+            CodecChannelUpgrade.this.clientMetrics,
+            upgradingStream.context(),
+            connectionMetric,
+            request.authority
+          );
+          channel.pipeline().addLast(handler);
+          handler.connectFuture().addListener(future -> {
+            if (!future.isSuccess()) {
+              // Handle me
+              // log.error(future.cause().getMessage(), future.cause());
+            } else {
+              Http2ClientConnectionImpl connection = (Http2ClientConnectionImpl) future.getNow();
+              HttpClientStream upgradedStream;
+              try {
+                upgradedStream = connection.upgradeStream(upgradingStream.metric(), upgradingStream.trace(), upgradingStream.context());
+                result.upgradeAccepted(connection, upgradedStream);
+              } catch (Exception e) {
+                result.upgradeFailure(e);
+              }
+            }
+          });
+          handler.clientUpgrade(ctx);
+        }
+      };
+      HttpClientUpgradeHandler upgradeHandler = new HttpClientUpgradeHandler(httpCodec, upgradeCodec, upgradeMaxContentLength) {
+
+        private long bufferedSize = 0;
+        private Deque<Object> buffered = new ArrayDeque<>();
+
+        @Override
+        public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+          if (buffered != null) {
+            // Buffer all messages received from the server until the HTTP request is fully sent.
+            //
+            // Explanation:
+            //
+            // It is necessary that the client only starts to process the response when the request
+            // has been fully sent because the current HTTP2 implementation will not be able to process
+            // the server preface until the client preface has been sent.
+            //
+            // Adding the VertxHttp2ConnectionHandler to the pipeline has two effects:
+            // - it is required to process the server preface
+            // - it will send the request preface to the server
+            //
+            // As we are adding this handler to the pipeline when we receive the 101 response from the server
+            // this might send the client preface before the initial HTTP request (doing the upgrade) is fully sent
+            // resulting in corrupting the protocol (the server might interpret it as an corrupted connection preface).
+            //
+            // Therefore we must buffer all pending messages until the request is fully sent.
+
+            int maxContent = maxContentLength();
+            boolean lower = bufferedSize < maxContent;
+            if (msg instanceof ByteBufHolder) {
+              bufferedSize += ((ByteBufHolder)msg).content().readableBytes();
+            } else if (msg instanceof ByteBuf) {
+              bufferedSize += ((ByteBuf)msg).readableBytes();
+            }
+            buffered.add(msg);
+
+            if (bufferedSize >= maxContent && lower) {
+              ctx.fireExceptionCaught(new TooLongFrameException("Max content exceeded " + maxContentLength() + " bytes."));
+            }
+          } else {
+            super.channelRead(ctx, msg);
+          }
+        }
+
+        @Override
+        public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
+          if (SEND_BUFFERED_MESSAGES_EVENT == evt) {
+            Deque<Object> messages = buffered;
+            buffered = null;
+            Object msg;
+            while ((msg = messages.poll()) != null) {
+              super.channelRead(ctx, msg);
+            }
+          } else {
+            super.userEventTriggered(ctx, evt);
+          }
+        }
+
+        @Override
+        public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
+          if (buffered != null) {
+            Deque<Object> messages = buffered;
+            buffered = null;
+            Object msg;
+            while ((msg = messages.poll()) != null) {
+              ReferenceCountUtil.release(msg);
+            }
+          }
+          super.handlerRemoved(ctx);
+        }
+
+      };
+      pipeline.addAfter("codec", null, new UpgradeRequestHandler());
+      pipeline.addAfter("codec", null, upgradeHandler);
+    }
+  }
+}

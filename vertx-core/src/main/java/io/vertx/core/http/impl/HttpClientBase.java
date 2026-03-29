@@ -16,118 +16,56 @@ import io.vertx.core.http.*;
 import io.vertx.core.internal.CloseSequence;
 import io.vertx.core.internal.VertxInternal;
 import io.vertx.core.net.*;
-import io.vertx.core.net.impl.NetClientBuilder;
-import io.vertx.core.net.impl.NetClientInternal;
 import io.vertx.core.net.impl.ProxyFilter;
 import io.vertx.core.spi.metrics.HttpClientMetrics;
-import io.vertx.core.spi.metrics.Metrics;
 import io.vertx.core.spi.metrics.MetricsProvider;
 
+import java.time.Duration;
 import java.util.*;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
-import java.util.stream.Collectors;
 
 /**
- * This class is thread-safe.
- *
  * @author <a href="http://tfox.org">Tim Fox</a>
  */
-public class HttpClientBase implements MetricsProvider, Closeable {
+public abstract class HttpClientBase implements MetricsProvider, Closeable {
 
   protected final VertxInternal vertx;
-  final HttpClientOptions options;
-  protected final NetClientInternal netClient;
-  protected final List<String> alpnVersions;
-  protected final HttpClientMetrics metrics;
+  protected final ProxyOptions defaultProxyOptions;
+  protected final HttpClientMetrics<?, ?> httpMetrics;
   protected final CloseSequence closeSequence;
-  private volatile ClientSSLOptions defaultSslOptions;
-  private long closeTimeout = 0L;
-  private TimeUnit closeTimeoutUnit = TimeUnit.SECONDS;
+  private Duration closeTimeout = Duration.ZERO;
   private Predicate<SocketAddress> proxyFilter;
 
-  public HttpClientBase(VertxInternal vertx, HttpClientOptions options) {
-    if (!options.isKeepAlive() && options.isPipelining()) {
-      throw new IllegalStateException("Cannot have pipelining with no keep alive");
-    }
-    List<HttpVersion> alpnVersions = options.getAlpnVersions();
-    if (alpnVersions == null || alpnVersions.isEmpty()) {
-      switch (options.getProtocolVersion()) {
-        case HTTP_2:
-          alpnVersions = Arrays.asList(HttpVersion.HTTP_2, HttpVersion.HTTP_1_1);
-          break;
-        default:
-          alpnVersions = Collections.singletonList(options.getProtocolVersion());
-          break;
-      }
-    } else {
-      alpnVersions = new ArrayList<>(alpnVersions);
-    }
-    this.alpnVersions = alpnVersions.stream().map(HttpVersion::alpnName).collect(Collectors.toUnmodifiableList());
+  public HttpClientBase(VertxInternal vertx,
+                        HttpClientMetrics<?, ?> httpMetrics,
+                        ProxyOptions defaultProxyOptions,
+                        List<String> nonProxyHosts) {
     this.vertx = vertx;
-    this.metrics = vertx.metricsSPI() != null ? vertx.metricsSPI().createHttpClientMetrics(options) : null;
-    this.options = new HttpClientOptions(options);
-    this.closeSequence = new CloseSequence(this::doClose, this::doShutdown);
-    this.proxyFilter = options.getNonProxyHosts() != null ? ProxyFilter.nonProxyHosts(options.getNonProxyHosts()) : ProxyFilter.DEFAULT_PROXY_FILTER;
-    this.netClient = new NetClientBuilder(vertx, new NetClientOptions(options).setProxyOptions(null)).metrics(metrics).build();
-    this.defaultSslOptions = options.getSslOptions();
-
-    ClientSSLOptions sslOptions = options.getSslOptions();
-    if (sslOptions != null) {
-      configureSSLOptions(sslOptions);
-    }
+    this.httpMetrics = httpMetrics;
+    this.defaultProxyOptions = defaultProxyOptions;
+    this.closeSequence = new CloseSequence(p -> doClose(p), p1 -> doShutdown(closeTimeout, p1));
+    this.proxyFilter = nonProxyHosts != null ? ProxyFilter.nonProxyHosts(nonProxyHosts) : ProxyFilter.DEFAULT_PROXY_FILTER;
   }
 
-  private void configureSSLOptions(ClientSSLOptions sslOptions) {
+  static void configureSSLOptions(boolean verifyHost, ClientSSLOptions sslOptions) {
     if (sslOptions.getHostnameVerificationAlgorithm() == null) {
-      sslOptions.setHostnameVerificationAlgorithm(options.isVerifyHost() ? "HTTPS" : "");
+      sslOptions.setHostnameVerificationAlgorithm(verifyHost ? "HTTPS" : "");
     }
-    if (sslOptions.getApplicationLayerProtocols() == null) {
-      sslOptions.setApplicationLayerProtocols(alpnVersions);
-    }
-  }
-
-  public NetClientInternal netClient() {
-    return netClient;
   }
 
   public Future<Void> closeFuture() {
     return closeSequence.future();
   }
 
-  public void close(Promise<Void> completion) {
+  public void close(Completable<Void> completion) {
     closeSequence.close(completion);
-  }
-
-  protected int getPort(RequestOptions request) {
-    Integer port = request.getPort();
-    if (port != null) {
-      return port;
-    }
-    SocketAddress server = (SocketAddress) request.getServer();
-    if (server != null && server.isInetSocket()) {
-      return server.port();
-    }
-    return options.getDefaultPort();
   }
 
   private ProxyOptions getProxyOptions(ProxyOptions proxyOptions) {
     if (proxyOptions == null) {
-      proxyOptions = options.getProxyOptions();
+      proxyOptions = defaultProxyOptions;
     }
     return proxyOptions;
-  }
-
-  protected String getHost(RequestOptions request) {
-    String host = request.getHost();
-    if (host != null) {
-      return host;
-    }
-    SocketAddress server = (SocketAddress) request.getServer();
-    if (server != null && server.isInetSocket()) {
-      return server.host();
-    }
-    return options.getDefaultHost();
   }
 
   protected ProxyOptions computeProxyOptions(ProxyOptions proxyOptions, SocketAddress addr) {
@@ -140,32 +78,27 @@ public class HttpClientBase implements MetricsProvider, Closeable {
     return proxyOptions;
   }
 
-  protected ClientSSLOptions sslOptions(HttpConnectOptions connectOptions) {
+  protected static ClientSSLOptions sslOptions(boolean verifyHost, HttpConnectOptions connectOptions, ClientSSLOptions defaultSslOptions) {
     ClientSSLOptions sslOptions = connectOptions.getSslOptions();
     if (sslOptions != null) {
       sslOptions = sslOptions.copy();
-      configureSSLOptions(sslOptions);
+      configureSSLOptions(verifyHost, sslOptions);
     } else {
       sslOptions = defaultSslOptions;
     }
     return sslOptions;
   }
 
-  HttpClientMetrics metrics() {
-    return metrics;
+  public HttpClientMetrics metrics() {
+    return httpMetrics;
   }
 
-  protected void doShutdown(Promise<Void> p) {
-    netClient.shutdown(closeTimeout, closeTimeoutUnit).onComplete(p);
-  }
+  protected abstract void doShutdown(Duration timeout, Completable<Void> p);
 
-  protected void doClose(Promise<Void> p) {
-    netClient.close().onComplete(p);
-  }
+  protected abstract void doClose(Completable<Void> p);
 
-  public Future<Void> shutdown(long timeout, TimeUnit unit) {
+  public Future<Void> shutdown(Duration timeout) {
     this.closeTimeout = timeout;
-    this.closeTimeoutUnit = unit;
     return closeSequence.close();
   }
 
@@ -175,24 +108,21 @@ public class HttpClientBase implements MetricsProvider, Closeable {
   }
 
   @Override
-  public Metrics getMetrics() {
-    return metrics;
+  public HttpClientMetrics<?, ?> getMetrics() {
+    return httpMetrics;
   }
 
   public Future<Boolean> updateSSLOptions(ClientSSLOptions options, boolean force) {
     options = options.copy();
-    configureSSLOptions(options);
-    defaultSslOptions = options;
+    setDefaultSslOptions(options);
     return Future.succeededFuture(true);
   }
+
+  protected abstract void setDefaultSslOptions(ClientSSLOptions options);
 
   public HttpClientBase proxyFilter(Predicate<SocketAddress> filter) {
     proxyFilter = filter;
     return this;
-  }
-
-  public HttpClientOptions options() {
-    return options;
   }
 
   public VertxInternal vertx() {

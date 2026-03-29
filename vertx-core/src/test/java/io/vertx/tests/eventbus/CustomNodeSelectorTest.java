@@ -13,14 +13,14 @@ package io.vertx.tests.eventbus;
 
 import io.vertx.core.*;
 import io.vertx.core.eventbus.MessageConsumer;
-import io.vertx.core.impl.VertxBuilder;
+import io.vertx.core.impl.VertxBootstrapImpl;
 import io.vertx.core.internal.VertxBootstrap;
 import io.vertx.core.json.JsonObject;
-import io.vertx.core.spi.cluster.ClusterManager;
+import io.vertx.core.spi.cluster.ClusteredNode;
 import io.vertx.core.spi.cluster.NodeInfo;
-import io.vertx.core.spi.cluster.NodeSelector;
-import io.vertx.core.spi.cluster.RegistrationUpdateEvent;
+import io.vertx.core.eventbus.impl.clustered.NodeSelector;
 import io.vertx.test.core.VertxTestBase;
+import io.vertx.test.fakecluster.FakeClusterManager;
 import org.junit.Test;
 
 import java.util.*;
@@ -46,7 +46,9 @@ public class CustomNodeSelectorTest extends VertxTestBase {
         return vertxOptions;
       })
       .map(options -> {
-        VertxBootstrap factory = ((VertxBuilder)VertxBootstrap.create().options(options).init()).clusterNodeSelector(new CustomNodeSelector());
+        VertxBootstrap factory = ((VertxBootstrapImpl)VertxBootstrap.create().options(options).init())
+          .clusterManager(new FakeClusterManager())
+          .clusterNodeSelector(new CustomNodeSelector());
         return factory.clusteredVertx();
       })
       .collect(collectingAndThen(toList(), Future::all));
@@ -93,11 +95,11 @@ public class CustomNodeSelectorTest extends VertxTestBase {
   }
 
   private static class CustomNodeSelector implements NodeSelector {
-    private ClusterManager clusterManager;
+    private ClusteredNode clusterManager;
     private String rack;
 
     @Override
-    public void init(Vertx vertx, ClusterManager clusterManager) {
+    public void init(ClusteredNode clusterManager) {
       this.clusterManager = clusterManager;
     }
 
@@ -107,12 +109,12 @@ public class CustomNodeSelectorTest extends VertxTestBase {
     }
 
     @Override
-    public void selectForSend(String address, Promise<String> promise) {
+    public void selectForSend(String address, Completable<String> promise) {
       promise.fail("Not implemented");
     }
 
     @Override
-    public void selectForPublish(String address, Promise<Iterable<String>> promise) {
+    public void selectForPublish(String address, Completable<Iterable<String>> promise) {
       List<String> nodes = clusterManager.getNodes();
       CompositeFuture future = nodes.stream()
         .map(nodeId -> {
@@ -131,14 +133,6 @@ public class CustomNodeSelectorTest extends VertxTestBase {
         }
         return res;
       }).onComplete(promise);
-    }
-
-    @Override
-    public void registrationsUpdated(RegistrationUpdateEvent event) {
-    }
-
-    @Override
-    public void registrationsLost() {
     }
   }
 }

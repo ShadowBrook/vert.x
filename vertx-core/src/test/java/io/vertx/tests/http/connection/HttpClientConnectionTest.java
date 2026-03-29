@@ -10,11 +10,13 @@
  */
 package io.vertx.tests.http.connection;
 
-import io.vertx.core.http.HttpClientConnection;
-import io.vertx.core.http.HttpClientResponse;
-import io.vertx.core.http.HttpConnectOptions;
-import io.vertx.core.http.HttpResponseExpectation;
-import io.vertx.core.http.impl.HttpClientInternal;
+import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.*;
+import io.vertx.core.http.impl.AltSvc;
+import io.vertx.core.http.impl.Origin;
+import io.vertx.core.http.impl.http2.Http2Connection;
+import io.vertx.core.internal.buffer.BufferInternal;
+import io.vertx.core.internal.http.HttpClientInternal;
 import io.vertx.test.http.HttpTestBase;
 import org.junit.Test;
 
@@ -98,7 +100,7 @@ public abstract class HttpClientConnectionTest extends HttpTestBase {
   public void testRequestQueuing() throws Exception {
     int num = 1;
     server.requestHandler(req -> {
-      req.response().end("Echo:" + req.getHeader("id"));
+      req.response().putHeader("id", req.getHeader("id")).end();
     });
     startServer(testAddress);
     List<String> collected = Collections.synchronizedList(new ArrayList<>());
@@ -107,14 +109,14 @@ public abstract class HttpClientConnectionTest extends HttpTestBase {
       for (int i = 0;i < concurrency + num;i++) {
         int val = i;
         conn.request().compose(req -> req
-            .putHeader("id", "" + val)
-            .send()
-            .compose(HttpClientResponse::body))
-          .onComplete(onSuccess(body -> {
-            collected.add(body.toString());
+          .putHeader("id", "echo-" + val)
+          .send()
+          .map(response -> response.getHeader("id")))
+          .onComplete(onSuccess(response -> {
+            collected.add(response);
             if (val == concurrency + num - 1) {
               List<String> expected = IntStream.range(0, concurrency + num)
-                .mapToObj(idx -> "Echo:" + idx)
+                .mapToObj(idx -> "echo-" + idx)
                 .collect(Collectors.toList());
               assertEquals(expected, collected);
               testComplete();
@@ -122,6 +124,72 @@ public abstract class HttpClientConnectionTest extends HttpTestBase {
           }));
       }
     }));
+    await();
+  }
+
+  @Test
+  public void testAlternateServiceHandler() throws Exception {
+    testAlternateServiceHandler(null);
+  }
+
+  void testAlternateServiceHandler(Origin origin) throws Exception {
+    String expected = "h2=\"192.168.0.1:443\"; ma=2592000";
+    server.requestHandler(request -> {
+      HttpServerResponse response = request.response();
+      if (request.version() == HttpVersion.HTTP_2) {
+        if (origin != null) {
+          Http2Connection http2Connection = (Http2Connection)request.connection();
+          Buffer ascii = origin.toASCII();
+          BufferInternal buffer = BufferInternal.buffer();
+          buffer.appendShort((short)ascii.length());
+          buffer.appendBuffer(ascii);
+          buffer.appendString(expected);
+          http2Connection.writeFrame(0, 0xA, 0, buffer.getByteBuf(), null);
+        } else {
+          Buffer value = Buffer.buffer();
+          value.appendShort((short)0);
+          value.appendString(expected);
+          response.writeCustomFrame(0xA, 0, value);
+        }
+      } else {
+        response.putHeader(HttpHeaders.ALT_SVC, expected);
+      }
+      response
+        .end("Hello World");
+    });
+    startServer(testAddress);
+    HttpClientConnection connection = client.connect(new HttpConnectOptions().setServer(testAddress).setHost(requestOptions.getHost()).setPort(requestOptions.getPort())).await();
+    ((io.vertx.core.http.impl.UnpooledHttpClientConnection)connection).unwrap().alternativeServicesHandler(evt -> {
+      assertNotNull(evt);
+      assertNotNull(evt.origin);
+      if (origin != null) {
+        assertEquals(origin.scheme, evt.origin.scheme);
+        assertEquals(origin.host, evt.origin.host);
+        assertEquals(origin.port, evt.origin.port);
+      } else {
+        String expectedScheme = connection.isSsl() ? "https" : "http";
+        assertEquals(expectedScheme, evt.origin.scheme);
+        assertEquals(testAddress.host(), evt.origin.host);
+        assertEquals(testAddress.port(), evt.origin.port);
+      }
+      assertEquals(AltSvc.ListOfValue.class, evt.altSvc.getClass());
+      AltSvc.ListOfValue list = (AltSvc.ListOfValue)evt.altSvc;
+      assertEquals(1, list.size());
+      AltSvc.Value value = list.get(0);
+      assertEquals("h2", value.protocolId());
+      assertEquals("192.168.0.1", value.altAuthority().host());
+      assertEquals(443, value.altAuthority().port());
+      assertEquals("2592000", value.parameters().get("ma"));
+      testComplete();
+    });
+    Buffer response = connection
+      .request()
+      .compose(request -> request
+        .send()
+        .expecting(HttpResponseExpectation.SC_OK)
+        .compose(HttpClientResponse::body))
+      .await();
+    assertEquals("Hello World", response.toString());
     await();
   }
 }

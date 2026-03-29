@@ -10,7 +10,9 @@
  */
 package io.vertx.core.internal.net.endpoint;
 
+import io.vertx.core.Completable;
 import io.vertx.core.Future;
+import io.vertx.core.Promise;
 import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.internal.VertxInternal;
 import io.vertx.core.net.Address;
@@ -28,13 +30,20 @@ public interface EndpointResolverInternal extends EndpointResolver {
     return new EndpointResolverImpl<>(vertx, endpointResolver, loadBalancer, expirationMillis);
   }
 
-  Future<Endpoint> lookupEndpoint(ContextInternal ctx, Address address);
+  boolean resolves(Address address);
+
+  void lookupEndpoint(Address address, Completable<Endpoint> promise);
 
   /**
    * Check expired endpoints, this method is called by the client periodically to give the opportunity to trigger eviction
    * or refreshes.
    */
   void checkExpired();
+
+  /**
+   * @return the number of entries held by the resolver
+   */
+  int size();
 
 
 }

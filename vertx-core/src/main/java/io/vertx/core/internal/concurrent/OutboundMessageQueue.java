@@ -1,47 +1,49 @@
 package io.vertx.core.internal.concurrent;
 
-import io.netty.channel.EventLoop;
-import io.vertx.core.streams.impl.OutboundWriteQueue;
+import io.vertx.core.internal.EventExecutor;
+import io.vertx.core.streams.impl.MessagePassingQueue;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 
-import static io.vertx.core.streams.impl.OutboundWriteQueue.numberOfUnwritableSignals;
+import static io.vertx.core.streams.impl.MessagePassingQueue.numberOfUnwritableSignals;
 
 /**
- * Outbound write queue for event-loop and channel like structures.
+ * Outbound message queue for event-loop and write stream like structures.
  */
 public class OutboundMessageQueue<M> implements Predicate<M> {
 
-  private final EventLoop eventLoop;
+  private final EventExecutor consumer;
   private final AtomicInteger numberOfUnwritableSignals = new AtomicInteger();
-  private final OutboundWriteQueue<M> writeQueue;
+  private final MessagePassingQueue.MpSc<M> mqp;
   private volatile boolean eventuallyClosed;
 
   // State accessed exclusively by the event loop thread
-  private boolean overflow;
+  private boolean overflow; // Indicates queue ownership
+  private int draining = 0; // Indicates drain in progress
   private boolean closed;
-  private int reentrant = 0;
 
   /**
    * Create a queue.
    *
-   * @param eventLoop the queue event-loop
+   * @param consumer the queue event-loop
    */
-  public OutboundMessageQueue(EventLoop eventLoop, Predicate<M> predicate) {
-    this.eventLoop = eventLoop;
-    this.writeQueue = new OutboundWriteQueue<>(predicate);
+  public OutboundMessageQueue(EventExecutor consumer) {
+    this.consumer = consumer;
+    this.mqp = new MessagePassingQueue.MpSc<>(this);
   }
 
   /**
    * Create a queue.
    *
-   * @param eventLoop the queue event-loop
+   * @param consumer the queue event-loop
+   * @param lowWaterMark the low-water mark, must be positive
+   * @param highWaterMark the high-water mark, must be greater than the low-water mark
    */
-  public OutboundMessageQueue(EventLoop eventLoop) {
-    this.eventLoop = eventLoop;
-    this.writeQueue = new OutboundWriteQueue<>(this);
+  public OutboundMessageQueue(EventExecutor consumer, int lowWaterMark, int highWaterMark) {
+    this.consumer = consumer;
+    this.mqp = new MessagePassingQueue.MpSc<>(this, lowWaterMark, highWaterMark);
   }
 
   @Override
@@ -52,78 +54,89 @@ public class OutboundMessageQueue<M> implements Predicate<M> {
   /**
    * @return whether the queue is writable, this can be called from any thread
    */
-  public boolean isWritable() {
+  public final boolean isWritable() {
     // Can be negative temporarily
     return numberOfUnwritableSignals.get() <= 0;
   }
 
   /**
-   * Write a {@code message} to the queue
+   * Write a {@code message} to the queue.
    *
    * @param message the message to be written
    * @return whether the writer can continue/stop writing to the queue
    */
   public final boolean write(M message) {
-    boolean inEventLoop = eventLoop.inEventLoop();
+    boolean inEventLoop = consumer.inThread();
     int flags;
     if (inEventLoop) {
       if (closed) {
-        disposeMessage(message);
+        handleDispose(message);
         return true;
       }
-      reentrant++;
-      try {
-        flags = writeQueue.add(message);
-        overflow |= (flags & OutboundWriteQueue.DRAIN_REQUIRED_MASK) != 0;
-        if ((flags & OutboundWriteQueue.QUEUE_WRITABLE_MASK) != 0) {
-          handleWriteQueueDrained(numberOfUnwritableSignals(flags));
-        }
-      } finally {
-        reentrant--;
-      }
-      if (reentrant == 0 && closed) {
-        releaseMessages();
+      flags = mqp.add(message);
+      if (draining == 0 && (flags & MessagePassingQueue.DRAIN_REQUIRED_MASK) != 0) {
+        flags = drainMessageQueue();
       }
     } else {
       if (eventuallyClosed) {
-        disposeMessage(message);
+        handleDispose(message);
         return true;
       }
-      flags = writeQueue.submit(message);
-      if ((flags & OutboundWriteQueue.DRAIN_REQUIRED_MASK) != 0) {
-        eventLoop.execute(this::drainWriteQueue);
+      flags = mqp.add(message);
+      if ((flags & MessagePassingQueue.DRAIN_REQUIRED_MASK) != 0) {
+        consumer.execute(this::drain);
       }
     }
-    if ((flags & OutboundWriteQueue.QUEUE_UNWRITABLE_MASK) != 0) {
-      int val = numberOfUnwritableSignals.incrementAndGet();
-      return val <= 0;
+    int val;
+    if ((flags & MessagePassingQueue.UNWRITABLE_MASK) != 0) {
+      val = numberOfUnwritableSignals.incrementAndGet();
     } else {
-      return numberOfUnwritableSignals.get() <= 0;
+      val = numberOfUnwritableSignals.get();
     }
+    return val <= 0;
   }
 
   /**
-   * Attempt to drain the queue Drain the queue.
+   * Synchronous message queue drain.
    */
-  public void drain() {
-    assert(eventLoop.inEventLoop());
-    if (overflow) {
-      startDraining();
-      reentrant++;
-      int flags;
-      try {
-        flags = writeQueue.drain();
-        overflow = (flags & OutboundWriteQueue.DRAIN_REQUIRED_MASK) != 0;
-        if ((flags & OutboundWriteQueue.QUEUE_WRITABLE_MASK) != 0) {
-          handleWriteQueueDrained(numberOfUnwritableSignals(flags));
-        }
-      } finally {
-        reentrant--;
+  private int drainMessageQueue() {
+    draining++;
+    try {
+      int flags = mqp.drain();
+      overflow |= (flags & MessagePassingQueue.DRAIN_REQUIRED_MASK) != 0;
+      if ((flags & MessagePassingQueue.WRITABLE_MASK) != 0) {
+        handleDrained(numberOfUnwritableSignals(flags));
       }
-      stopDraining();
-      if (reentrant == 0 && closed) {
+      return flags;
+    } finally {
+      draining--;
+      if (draining == 0 && closed) {
         releaseMessages();
       }
+    }
+  }
+
+  private void drain() {
+    if (closed) {
+      return;
+    }
+    assert(draining == 0);
+    startDraining();
+    drainMessageQueue();
+    stopDraining();
+  }
+
+  /**
+   * Attempts to drain the queue.
+   */
+  public final boolean tryDrain() {
+    assert(consumer.inThread());
+    if (overflow) {
+      overflow = false;
+      drain();
+      return true;
+    } else {
+      return false;
     }
   }
 
@@ -131,55 +144,36 @@ public class OutboundMessageQueue<M> implements Predicate<M> {
    * Close the queue.
    */
   public final void close() {
-    assert(eventLoop.inEventLoop());
+    assert(consumer.inThread());
     if (closed) {
       return;
     }
     closed = true;
     eventuallyClosed = true;
-    if (reentrant > 0) {
+    if (draining > 0) {
       return;
     }
     releaseMessages();
   }
 
-  private void drainWriteQueue() {
-    startDraining();
-    reentrant++;
-    int flags;
-    try {
-      flags = writeQueue.drain();
-      overflow = (flags & OutboundWriteQueue.DRAIN_REQUIRED_MASK) != 0;
-      if ((flags & OutboundWriteQueue.QUEUE_WRITABLE_MASK) != 0) {
-        handleWriteQueueDrained(numberOfUnwritableSignals(flags));
-      }
-    } finally {
-      reentrant--;
-    }
-    stopDraining();
-    if (reentrant == 0 && closed) {
-      releaseMessages();
-    }
-  }
-
-  private void handleWriteQueueDrained(int numberOfSignals) {
+  private void handleDrained(int numberOfSignals) {
     int val = numberOfUnwritableSignals.addAndGet(-numberOfSignals);
     if ((val + numberOfSignals) > 0 && val <= 0) {
-      writeQueueDrained();
+      consumer.execute(this::handleDrained);
     }
   }
 
   private void releaseMessages() {
-    List<M> messages = writeQueue.clear();
+    List<M> messages = mqp.clear();
     for (M elt : messages) {
-      disposeMessage(elt);
+      handleDispose(elt);
     }
   }
 
   /**
    * Called when the queue becomes writable again.
    */
-  protected void writeQueueDrained() {
+  protected void handleDrained() {
   }
 
   protected void startDraining() {
@@ -193,6 +187,6 @@ public class OutboundMessageQueue<M> implements Predicate<M> {
    *
    * @param msg the message
    */
-  protected void disposeMessage(M msg) {
+  protected void handleDispose(M msg) {
   }
 }

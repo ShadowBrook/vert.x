@@ -16,10 +16,12 @@ import io.vertx.core.buffer.Buffer;
 import io.vertx.core.datagram.DatagramSocket;
 import io.vertx.core.http.*;
 import io.vertx.core.http.impl.CleanableHttpClient;
+import io.vertx.core.http.impl.tcp.TcpHttpClientTransport;
 import io.vertx.core.internal.CloseFuture;
 import io.vertx.core.internal.VertxInternal;
+import io.vertx.core.internal.net.NetClientInternal;
 import io.vertx.core.net.*;
-import io.vertx.core.net.impl.CleanableNetClient;
+import io.vertx.core.net.impl.tcp.CleanableNetClient;
 import io.vertx.core.internal.net.NetSocketInternal;
 import io.vertx.test.core.AsyncTestBase;
 import io.vertx.test.core.Repeat;
@@ -58,11 +60,11 @@ public class VertxTest extends AsyncTestBase {
     AtomicInteger closedCount = new AtomicInteger();
     Closeable myCloseable1 = completionHandler -> {
       closedCount.incrementAndGet();
-      completionHandler.handle(Future.succeededFuture());
+      completionHandler.succeed();
     };
     Closeable myCloseable2 = completionHandler -> {
       closedCount.incrementAndGet();
-      completionHandler.handle(Future.succeededFuture());
+      completionHandler.succeed();
     };
     VertxInternal vertx = (VertxInternal) Vertx.vertx();
     vertx.addCloseHook(myCloseable1);
@@ -82,11 +84,11 @@ public class VertxTest extends AsyncTestBase {
     AtomicInteger closedCount = new AtomicInteger();
     class Hook implements Closeable {
       @Override
-      public void close(Promise<Void> completion) {
+      public void close(Completable<Void> completion) {
         if (closedCount.incrementAndGet() == 1) {
           throw new RuntimeException("Don't be afraid");
         } else {
-          completion.handle(Future.succeededFuture());
+          completion.succeed();
         }
       }
     }
@@ -108,12 +110,12 @@ public class VertxTest extends AsyncTestBase {
     AtomicInteger closedCount = new AtomicInteger();
     class Hook implements Closeable {
       @Override
-      public void close(Promise<Void> completion) {
+      public void close(Completable<Void> completion) {
         if (closedCount.incrementAndGet() == 1) {
-          completion.handle(Future.succeededFuture());
+          completion.succeed();
           throw new RuntimeException();
         } else {
-          completion.handle(Future.succeededFuture());
+          completion.succeed();
         }
       }
     }
@@ -164,7 +166,9 @@ public class VertxTest extends AsyncTestBase {
       client.request(HttpMethod.GET, HttpTestBase.DEFAULT_HTTP_PORT, "localhost", "/").onSuccess(req -> {
         req.send();
       });
-      (((CleanableHttpClient)client).delegate).netClient().closeFuture().onComplete(ar -> {
+      TcpHttpClientTransport channelConnector = (TcpHttpClientTransport)(((CleanableHttpClient) client).delegate).tcpTransport();
+      NetClientInternal netClient = channelConnector.client();
+      netClient.closeFuture().onComplete(ar -> {
         closed2.set(true);
       });
       WeakReference<HttpClient> ref = new WeakReference<>(client);
@@ -367,19 +371,18 @@ public class VertxTest extends AsyncTestBase {
       vertx.createSharedWorkerExecutor("LeakTest").executeBlocking(() -> {
         threads[0] = Thread.currentThread();
         return null;
-      }).toCompletionStage().toCompletableFuture().get(20, TimeUnit.SECONDS);
+      }).await(20, TimeUnit.SECONDS);
       vertx.createSharedWorkerExecutor("LeakTest").executeBlocking(() -> {
         threads[1] = Thread.currentThread();
         return null;
-      }).toCompletionStage().toCompletableFuture().get(20, TimeUnit.SECONDS);
+      }).await(20, TimeUnit.SECONDS);
       runGC();
       assertFalse(threads[0].isAlive());
       assertFalse(threads[1].isAlive());
     } finally {
       vertx
         .close()
-        .toCompletionStage().toCompletableFuture()
-        .get(20, TimeUnit.SECONDS);
+        .await(20, TimeUnit.SECONDS);
     }
   }
 
@@ -423,9 +426,9 @@ public class VertxTest extends AsyncTestBase {
   @Test
   public void testCloseVertxShouldWaitConcurrentCloseHook() throws Exception {
     VertxInternal vertx = (VertxInternal) Vertx.vertx();
-    AtomicReference<Promise<Void>> ref = new AtomicReference<>();
+    AtomicReference<Completable<Void>> ref = new AtomicReference<>();
     CloseFuture fut = new CloseFuture();
-    fut.add(ref::set);
+    fut.add(newValue -> ref.set(newValue));
     vertx.addCloseHook(fut);
     Promise<Void> p = Promise.promise();
     fut.close(p);
@@ -433,7 +436,7 @@ public class VertxTest extends AsyncTestBase {
     vertx.close().onComplete(ar -> closed.set(true));
     Thread.sleep(500);
     assertFalse(closed.get());
-    ref.get().complete();
+    ref.get().succeed();
     assertWaitUntil(closed::get);
   }
 
@@ -487,8 +490,8 @@ public class VertxTest extends AsyncTestBase {
       WorkerExecutor exec = vertx.createSharedWorkerExecutor("pool");
       WeakReference<Thread> ref = exec.executeBlocking(() -> {
         return new WeakReference<>(Thread.currentThread());
-      }).toCompletionStage().toCompletableFuture().get();
-      exec.close().toCompletionStage().toCompletableFuture().get();
+      }).await();
+      exec.close().await();
       long now = System.currentTimeMillis();
       do {
         assertTrue(System.currentTimeMillis() - now < 20_000);

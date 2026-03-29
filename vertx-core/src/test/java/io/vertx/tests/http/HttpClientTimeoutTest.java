@@ -42,7 +42,7 @@ public abstract class HttpClientTimeoutTest extends HttpTestBase {
     startServer(testAddress);
     List<HttpClientRequest> requests = new ArrayList<>();
     for (int i = 0;i < 5;i++) {
-      HttpClientRequest request = client.request(new RequestOptions(requestOptions)).toCompletionStage().toCompletableFuture().get();
+      HttpClientRequest request = client.request(new RequestOptions(requestOptions)).await();
       requests.add(request);
     }
     long now = System.currentTimeMillis();
@@ -64,7 +64,7 @@ public abstract class HttpClientTimeoutTest extends HttpTestBase {
     startServer(testAddress);
     List<HttpClientRequest> requests = new ArrayList<>();
     for (int i = 0;i < 5;i++) {
-      HttpClientRequest request = client.request(new RequestOptions(requestOptions)).toCompletionStage().toCompletableFuture().get();
+      HttpClientRequest request = client.request(new RequestOptions(requestOptions)).await();
       requests.add(request);
     }
     vertx.setTimer(timeout * ratio / 100, id -> {
@@ -119,10 +119,7 @@ public abstract class HttpClientTimeoutTest extends HttpTestBase {
 
     CountDownLatch latch = new CountDownLatch(requests);
 
-    server.listen(testAddress)
-      .toCompletionStage()
-      .toCompletableFuture()
-      .get(20, TimeUnit.SECONDS);
+    server.listen(testAddress).await(20, TimeUnit.SECONDS);
 
     for(int count = 0; count < requests; count++) {
 
@@ -210,8 +207,20 @@ public abstract class HttpClientTimeoutTest extends HttpTestBase {
   public void testRequestTimeoutCanceledWhenRequestHasAnOtherError() {
     Assume.assumeFalse(Utils.isWindows());
     AtomicReference<Throwable> exception = new AtomicReference<>();
-    // There is no server running, should fail to connect
-    client.request(new RequestOptions().setPort(5000).setIdleTimeout(800))
+    NetServer server = vertx
+      .createNetServer()
+      .connectHandler(so -> {})
+      .listen(0)
+      .await();
+    int port;
+    try {
+      port = server.actualPort();
+    } finally {
+      server
+        .close()
+        .await();
+    }
+    client.request(new RequestOptions().setPort(port).setIdleTimeout(800))
       .onComplete(onFailure(exception::set));
     vertx.setTimer(1500, id -> {
       assertNotNull("Expected an exception to be set", exception.get());
@@ -242,7 +251,7 @@ public abstract class HttpClientTimeoutTest extends HttpTestBase {
       req.response().onComplete(onFailure(err -> {
         complete();
       }));
-      req.setChunked(true).sendHead().onComplete(onSuccess(version -> req.idleTimeout(500)));
+      req.setChunked(true).writeHead().onComplete(onSuccess(version -> req.idleTimeout(500)));
       AtomicBoolean errored = new AtomicBoolean();
       req.exceptionHandler(err -> {
         if (errored.compareAndSet(false, true)) {
@@ -292,7 +301,7 @@ public abstract class HttpClientTimeoutTest extends HttpTestBase {
           complete();
         }
       });
-      req.sendHead();
+      req.writeHead();
     }));
     await();
   }

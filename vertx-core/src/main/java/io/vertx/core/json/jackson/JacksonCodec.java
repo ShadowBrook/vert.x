@@ -13,12 +13,14 @@ package io.vertx.core.json.jackson;
 
 import com.fasterxml.jackson.core.*;
 import com.fasterxml.jackson.core.io.SegmentedStringWriter;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.core.util.BufferRecycler;
 import com.fasterxml.jackson.core.util.ByteArrayBuilder;
 import io.netty.buffer.ByteBufInputStream;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.impl.SysProps;
 import io.vertx.core.internal.buffer.BufferInternal;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
 import io.vertx.core.json.DecodeException;
 import io.vertx.core.json.EncodeException;
 import io.vertx.core.json.JsonArray;
@@ -30,15 +32,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.Writer;
-import java.lang.reflect.ParameterizedType;
-import java.lang.reflect.Type;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 import static io.vertx.core.json.impl.JsonUtil.BASE64_ENCODER;
 import static io.vertx.core.json.impl.JsonUtil.BASE64_DECODER;
@@ -49,10 +46,71 @@ import static java.time.format.DateTimeFormatter.ISO_INSTANT;
  */
 public class JacksonCodec implements JsonCodec {
 
+  private static final Logger log = LoggerFactory.getLogger(JacksonCodec.class);
+
   private static JsonFactory buildFactory() {
-    TSFBuilder<?, ?> builder = JsonFactory.builder();
-    builder.recyclerPool(HybridJacksonPool.getInstance());
-    return builder.build();
+    TSFBuilder<?, ?> tsfBuilder = JsonFactory.builder();
+
+    // Build stream read constraints
+    StreamReadConstraints.Builder readConstraintsBuilder = StreamReadConstraints.builder();
+    try {
+      OptionalInt override = SysProps.JACKSON_DEFAULT_READ_MAX_NESTING_DEPTH.getAsInt();
+      if (override.isPresent()) {
+        readConstraintsBuilder.maxNestingDepth(override.getAsInt());
+      }
+    } catch (IllegalArgumentException e) {
+      log.warn("Invalid " + SysProps.JACKSON_DEFAULT_READ_MAX_NESTING_DEPTH.name + " system property value, use " +
+        StreamReadConstraints.DEFAULT_MAX_DEPTH + " instead");
+    }
+    try {
+      OptionalLong override = SysProps.JACKSON_DEFAULT_READ_MAX_DOC_LEN.getAsLong();
+      if (override.isPresent()) {
+        readConstraintsBuilder.maxDocumentLength(override.getAsLong());
+      }
+    } catch (IllegalArgumentException e) {
+      log.warn("Invalid " + SysProps.JACKSON_DEFAULT_READ_MAX_DOC_LEN.name + " system property value, use " +
+        StreamReadConstraints.DEFAULT_MAX_DOC_LEN + " instead");
+    }
+    try {
+      OptionalInt override = SysProps.JACKSON_DEFAULT_READ_MAX_NUM_LEN.getAsInt();
+      if (override.isPresent()) {
+        readConstraintsBuilder.maxNumberLength(override.getAsInt());
+      }
+    } catch (IllegalArgumentException e) {
+      log.warn("Invalid " + SysProps.JACKSON_DEFAULT_READ_MAX_NUM_LEN.name + " system property value, use " +
+        StreamReadConstraints.DEFAULT_MAX_NUM_LEN + " instead");
+    }
+    try {
+      OptionalInt override = SysProps.JACKSON_DEFAULT_READ_MAX_STRING_LEN.getAsInt();
+      if (override.isPresent()) {
+        readConstraintsBuilder.maxStringLength(override.getAsInt());
+      }
+    } catch (IllegalArgumentException e) {
+      log.warn("Invalid " + SysProps.JACKSON_DEFAULT_READ_MAX_STRING_LEN.name + " system property value, use " +
+        StreamReadConstraints.DEFAULT_MAX_STRING_LEN + " instead");
+    }
+    try {
+      OptionalInt override = SysProps.JACKSON_DEFAULT_READ_MAX_NAME_LEN.getAsInt();
+      if (override.isPresent()) {
+        readConstraintsBuilder.maxNameLength(override.getAsInt());
+      }
+    } catch (IllegalArgumentException e) {
+      log.warn("Invalid " + SysProps.JACKSON_DEFAULT_READ_MAX_NAME_LEN.name + " system property value, use " +
+        StreamReadConstraints.DEFAULT_MAX_NAME_LEN + " instead");
+    }
+    try {
+      OptionalLong override = SysProps.JACKSON_DEFAULT_READ_MAX_TOKEN_COUNT.getAsLong();
+      if (override.isPresent()) {
+        readConstraintsBuilder.maxTokenCount(override.getAsLong());
+      }
+    } catch (IllegalArgumentException e) {
+      log.warn("Invalid " + SysProps.JACKSON_DEFAULT_READ_MAX_TOKEN_COUNT.name + " system property value, use " +
+        StreamReadConstraints.DEFAULT_MAX_TOKEN_COUNT + " instead");
+    }
+
+    tsfBuilder.streamReadConstraints(readConstraintsBuilder.build());
+    tsfBuilder.recyclerPool(HybridJacksonPool.getInstance());
+    return tsfBuilder.build();
   }
 
   static final JsonFactory factory = buildFactory();
@@ -67,26 +125,14 @@ public class JacksonCodec implements JsonCodec {
     return fromParser(createParser(json), clazz);
   }
 
-  public <T> T fromString(String str, TypeReference<T> typeRef) throws DecodeException {
-    return fromString(str, classTypeOf(typeRef));
-  }
-
   @Override
   public <T> T fromBuffer(Buffer json, Class<T> clazz) throws DecodeException {
     return fromParser(createParser(json), clazz);
   }
 
-  public <T> T fromBuffer(Buffer buf, TypeReference<T> typeRef) throws DecodeException {
-    return fromBuffer(buf, classTypeOf(typeRef));
-  }
-
   @Override
   public <T> T fromValue(Object json, Class<T> toValueType) {
     throw new DecodeException("Mapping " + toValueType.getName() + "  is not available without Jackson Databind on the classpath");
-  }
-
-  public <T> T fromValue(Object json, TypeReference<T> type) {
-    throw new DecodeException("Mapping " + type.getType().getTypeName() + " is not available without Jackson Databind on the classpath");
   }
 
   @Override
@@ -174,7 +220,7 @@ public class JacksonCodec implements JsonCodec {
     JsonToken remaining;
     try {
       parser.nextToken();
-      res = parseAny(parser);
+      res = parseValue(parser);
       remaining = parser.nextToken();
     } catch (IOException e) {
       throw new DecodeException(e.getMessage(), e);
@@ -187,12 +233,19 @@ public class JacksonCodec implements JsonCodec {
     return cast(res, type);
   }
 
-  private static Object parseAny(JsonParser parser) throws IOException, DecodeException {
+  /**
+   * Parse a JSON value given the {@code parser}, consuming the current parser token and possibly more
+   * when parsing an object or an array.
+   *
+   * @param parser the parser
+   * @return the parsed value as an object
+   */
+  public static Object parseValue(JsonParser parser) throws IOException, DecodeException {
     switch (parser.currentTokenId()) {
       case JsonTokenId.ID_START_OBJECT:
-        return parseObject(parser);
+        return internalParseObject(parser);
       case JsonTokenId.ID_START_ARRAY:
-        return parseArray(parser);
+        return internalParseArray(parser);
       case JsonTokenId.ID_STRING:
         return parser.getText();
       case JsonTokenId.ID_NUMBER_FLOAT:
@@ -209,13 +262,26 @@ public class JacksonCodec implements JsonCodec {
     }
   }
 
-  private static Map<String, Object> parseObject(JsonParser parser) throws IOException {
+  /**
+   * Parse a JSON object given the {@code parser}, the parser current token must be {@link JsonTokenId#ID_START_OBJECT}
+   *
+   * @param parser the parser
+   * @return the parsed object
+   */
+  public static Map<String, Object> parseObject(JsonParser parser) throws IOException {
+    if (parser.currentTokenId() != JsonTokenId.ID_START_OBJECT) {
+      throw new DecodeException("Expecting the current parser token to be the start of an object");
+    }
+    return internalParseObject(parser);
+  }
+
+  private static Map<String, Object> internalParseObject(JsonParser parser) throws IOException {
     String key1 = parser.nextFieldName();
     if (key1 == null) {
       return new LinkedHashMap<>(2);
     }
     parser.nextToken();
-    Object value1 = parseAny(parser);
+    Object value1 = parseValue(parser);
     String key2 = parser.nextFieldName();
     if (key2 == null) {
       LinkedHashMap<String, Object> obj = new LinkedHashMap<>(2);
@@ -223,7 +289,7 @@ public class JacksonCodec implements JsonCodec {
       return obj;
     }
     parser.nextToken();
-    Object value2 = parseAny(parser);
+    Object value2 = parseValue(parser);
     String key = parser.nextFieldName();
     if (key == null) {
       LinkedHashMap<String, Object> obj = new LinkedHashMap<>(2);
@@ -237,14 +303,27 @@ public class JacksonCodec implements JsonCodec {
     obj.put(key2, value2);
     do {
       parser.nextToken();
-      Object value = parseAny(parser);
+      Object value = parseValue(parser);
       obj.put(key, value);
       key = parser.nextFieldName();
     } while (key != null);
     return obj;
   }
 
-  private static List<Object> parseArray(JsonParser parser) throws IOException {
+  /**
+   * Parse a JSON array given the {@code parser}, the parser current token must be {@link JsonTokenId#ID_START_ARRAY}
+   *
+   * @param parser the parser
+   * @return the parsed array
+   */
+  public static List<Object> parseArray(JsonParser parser) throws IOException {
+    if (parser.currentTokenId() != JsonTokenId.ID_START_ARRAY) {
+      throw new DecodeException("Expecting the current parser token to be the start of an array");
+    }
+    return internalParseArray(parser);
+  }
+
+  private static List<Object> internalParseArray(JsonParser parser) throws IOException {
     List<Object> array = new ArrayList<>();
     while (true) {
       parser.nextToken();
@@ -254,7 +333,7 @@ public class JacksonCodec implements JsonCodec {
       } else if (tokenId == JsonTokenId.ID_END_ARRAY) {
         return array;
       }
-      Object value = parseAny(parser);
+      Object value = parseValue(parser);
       array.add(value);
     }
   }
@@ -378,17 +457,6 @@ public class JacksonCodec implements JsonCodec {
     }
   }
 
-  private static <T> Class<T> classTypeOf(TypeReference<T> typeRef) {
-    Type type = typeRef.getType();
-    if (type instanceof Class) {
-      return (Class<T>) type;
-    } else if (type instanceof ParameterizedType) {
-      return (Class<T>) ((ParameterizedType)type).getRawType();
-    } else {
-      throw new DecodeException();
-    }
-  }
-
   private static <T> T cast(Object o, Class<T> clazz) {
     if (o instanceof Map) {
       if (!clazz.isAssignableFrom(Map.class)) {
@@ -448,29 +516,5 @@ public class JacksonCodec implements JsonCodec {
       }
       return clazz.cast(o);
     }
-  }
-
-  /**
-   * Decode a given JSON string to a POJO of the given type.
-   * @param str the JSON string.
-   * @param type the type to map to.
-   * @param <T> the generic type.
-   * @return an instance of T
-   * @throws DecodeException when there is a parsing or invalid mapping.
-   */
-  public static <T> T decodeValue(String str, TypeReference<T> type) throws DecodeException {
-    return JacksonFactory.CODEC.fromString(str, type);
-  }
-
-  /**
-   * Decode a given JSON buffer to a POJO of the given class type.
-   * @param buf the JSON buffer.
-   * @param type the type to map to.
-   * @param <T> the generic type.
-   * @return an instance of T
-   * @throws DecodeException when there is a parsing or invalid mapping.
-   */
-  public static <T> T decodeValue(Buffer buf, TypeReference<T> type) throws DecodeException {
-    return JacksonFactory.CODEC.fromBuffer(buf, type);
   }
 }

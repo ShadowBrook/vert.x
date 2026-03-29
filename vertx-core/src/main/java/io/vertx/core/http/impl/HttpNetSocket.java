@@ -16,34 +16,33 @@ import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClosedException;
-import io.vertx.core.http.StreamResetException;
 import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.net.NetSocket;
 import io.vertx.core.net.SSLOptions;
 import io.vertx.core.net.SocketAddress;
-import io.vertx.core.net.impl.ConnectionBase;
 import io.vertx.core.streams.ReadStream;
 import io.vertx.core.streams.WriteStream;
 
-import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLSession;
-import java.security.cert.Certificate;
+import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 /**
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
-class HttpNetSocket implements NetSocket {
+public class HttpNetSocket implements NetSocket {
 
-  static HttpNetSocket netSocket(ConnectionBase conn, ContextInternal context, ReadStream<Buffer> readStream, WriteStream<Buffer> writeStream) {
-    HttpNetSocket sock = new HttpNetSocket(conn, context, readStream, writeStream);
+  public static HttpNetSocket netSocket(HttpStream stream, ContextInternal context, ReadStream<Buffer> readStream, WriteStream<Buffer> writeStream) {
+    HttpNetSocket sock = new HttpNetSocket(stream, context, readStream, writeStream);
     readStream.handler(sock::handleData);
     readStream.endHandler(sock::handleEnd);
     readStream.exceptionHandler(sock::handleException);
+    stream.closeHandler(sock::handleClose);
     return sock;
   }
 
-  private final ConnectionBase conn;
+  private final HttpStream stream;
   private final ContextInternal context;
   private final ReadStream<Buffer> readStream;
   private final WriteStream<Buffer> writeStream;
@@ -51,9 +50,10 @@ class HttpNetSocket implements NetSocket {
   private Handler<Void> closeHandler;
   private Handler<Void> endHandler;
   private Handler<Buffer> dataHandler;
+  private boolean closed;
 
-  private HttpNetSocket(ConnectionBase conn, ContextInternal context, ReadStream<Buffer> readStream, WriteStream<Buffer> writeStream) {
-    this.conn = conn;
+  private HttpNetSocket(HttpStream stream, ContextInternal context, ReadStream<Buffer> readStream, WriteStream<Buffer> writeStream) {
+    this.stream = stream;
     this.context = context;
     this.readStream = readStream;
     this.writeStream = writeStream;
@@ -65,9 +65,12 @@ class HttpNetSocket implements NetSocket {
       // Give opportunity to send a last chunk
       endHandler.handle(null);
     }
-    Handler<Void> closeHandler = closeHandler();
-    if (closeHandler != null) {
-      closeHandler.handle(null);
+    if (!closed) {
+      closed = true;
+      Handler<Void> closeHandler = closeHandler();
+      if (closeHandler != null) {
+        closeHandler.handle(null);
+      }
     }
   }
 
@@ -89,7 +92,11 @@ class HttpNetSocket implements NetSocket {
         endHandler.handle(null);
       }
     }
-    if (cause instanceof StreamResetException || cause instanceof HttpClosedException) {
+  }
+
+  private void handleClose(Void v) {
+    if (!closed) {
+      closed = true;
       Handler<Void> closeHandler = closeHandler();
       if (closeHandler != null) {
         closeHandler.handle(null);
@@ -194,7 +201,7 @@ class HttpNetSocket implements NetSocket {
 
   @Override
   public Future<Void> sendFile(String filename, long offset, long length) {
-    return HttpUtils.resolveFile(conn.getContext(), filename, offset, length)
+    return HttpUtils.resolveFile(stream.context(), filename, offset, length)
       .compose(file -> file
         .pipe()
         .endOnComplete(false)
@@ -205,22 +212,27 @@ class HttpNetSocket implements NetSocket {
 
   @Override
   public SocketAddress remoteAddress() {
-    return conn.remoteAddress();
+    return stream.connection().remoteAddress();
   }
 
   @Override
   public SocketAddress remoteAddress(boolean real) {
-    return conn.remoteAddress(real);
+    return stream.connection().remoteAddress(real);
   }
 
   @Override
   public SocketAddress localAddress() {
-    return conn.localAddress();
+    return stream.connection().localAddress();
   }
 
   @Override
   public SocketAddress localAddress(boolean real) {
-    return conn.localAddress(real);
+    return stream.connection().localAddress(real);
+  }
+
+  @Override
+  public List<Map.Entry<Buffer, Buffer>> proxyProtocolV2HeaderTLVs() {
+    return stream.connection().proxyProtocolV2HeaderTLVs();
   }
 
   @Override
@@ -230,52 +242,42 @@ class HttpNetSocket implements NetSocket {
 
   @Override
   public NetSocket closeHandler(@Nullable Handler<Void> handler) {
-    synchronized (conn) {
+    synchronized (stream) {
       closeHandler = handler;
     }
     return this;
   }
 
   @Override
-  public NetSocket shutdownHandler(@Nullable Handler<Void> handler) {
+  public NetSocket shutdownHandler(@Nullable Handler<Duration> handler) {
     // Not sure, we can do something here
     return this;
   }
 
   Handler<Void> closeHandler() {
-    synchronized (conn) {
+    synchronized (stream) {
       return closeHandler;
     }
   }
 
   @Override
-  public Future<Void> upgradeToSsl(String serverName) {
-    return Future.failedFuture("Cannot upgrade stream to SSL");
-  }
-
-  @Override
-  public Future<Void> upgradeToSsl(SSLOptions sslOptions, String serverName) {
-    return Future.failedFuture("Cannot upgrade stream to SSL");
+  public Future<Void> upgradeToSsl(SSLOptions sslOptions, String serverName, Buffer upgrade) {
+    return context.failedFuture("Cannot upgrade stream to SSL");
   }
 
   @Override
   public boolean isSsl() {
-    return conn.isSsl();
+    return stream.connection().isSsl();
   }
 
   @Override
   public SSLSession sslSession() {
-    return conn.sslSession();
-  }
-
-  @Override
-  public List<Certificate> peerCertificates() throws SSLPeerUnverifiedException {
-    return conn.peerCertificates();
+    return stream.connection().sslSession();
   }
 
   @Override
   public String indicatedServerName() {
-    return conn.indicatedServerName();
+    return stream.connection().indicatedServerName();
   }
 
   @Override

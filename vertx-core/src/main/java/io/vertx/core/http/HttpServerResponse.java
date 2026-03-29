@@ -16,10 +16,13 @@ import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.impl.HttpServerResponseImpl;
 import io.vertx.core.net.HostAndPort;
 import io.vertx.core.streams.ReadStream;
 import io.vertx.core.streams.WriteStream;
 
+import java.io.RandomAccessFile;
+import java.nio.channels.FileChannel;
 import java.util.Set;
 
 /**
@@ -37,10 +40,17 @@ import java.util.Set;
  * outgoing HTTP connection, bypassing user space altogether (where supported by
  * the underlying operating system). This is a very efficient way of
  * serving files from the server since buffers do not have to be read one by one
- * from the file and written to the outgoing socket.
+ * from the file and written to the outgoing socket. If the developer wants to use directly a
+ * {@link java.nio.channels.FileChannel} and manage its lifecycle use {@link #sendFile(FileChannel)}.
+ * This is not yet supported in HTTP/2 for {@link HttpServerResponseImpl}.
  * <p>
  * It implements {@link io.vertx.core.streams.WriteStream} so it can be used with
  * {@link io.vertx.core.streams.Pipe} to pipe data with flow control.
+ * <p>
+ * Any response should end with a terminal action, which are {@link #end()} or {@link #sendFile(String)} for successful
+ * completion of the request, or {@link #reset()} for erroneous completion of the request, so you can only call one of
+ * the three methods as the last step in dealing with your response, but you must call one of the three methods.
+ * </p>
  *
  * @author <a href="http://tfox.org">Tim Fox</a>
  */
@@ -207,6 +217,13 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
   HttpServerResponse endHandler(@Nullable Handler<Void> handler);
 
   /**
+   * Send the response headers.
+   *
+   * @return a future notified by the success or failure of the write
+   */
+  Future<Void> writeHead();
+
+  /**
    * Write a {@link String} to the response body, encoded using the encoding {@code enc}.
    *
    * @param chunk  the string to write
@@ -270,6 +287,11 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
    * the actual response won't get written until this method gets called.
    * <p>
    * Once the response has ended, it cannot be used any more.
+   * </p>
+   * <p>
+   * This is a terminal action, like {@link #sendFile(String)} and {@link #reset()}, so you can only call one of the
+   * three methods as the last step in dealing with your response.
+   * </p>
    *
    * @return a future completed with the body result
    */
@@ -324,7 +346,11 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
    *
    * <p> If the {@link HttpHeaders#CONTENT_LENGTH} is set then the request assumes this is the
    * length of the {stream}, otherwise the request will set a chunked {@link HttpHeaders#CONTENT_ENCODING}.
-   *
+   * </p>
+   * <p>
+   * This is a terminal action, like {@link #end()} and {@link #reset()}, so you can only call one of the
+   * three methods as the last step in dealing with your response.
+   * </p>
    * @return a future notified when the response has been written
    */
   default Future<Void> sendFile(String filename) {
@@ -334,6 +360,10 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
   /**
    * Same as {@link #sendFile(String, long, long)} using length @code{Long.MAX_VALUE} which means until the end of the
    * file.
+   * <p>
+   * This is a terminal action, like {@link #end()} and {@link #reset()}, so you can only call one of the
+   * three methods as the last step in dealing with your response.
+   * </p>
    *
    * @param filename  path to the file to serve
    * @param offset offset to start serving from
@@ -349,6 +379,10 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
    * (where supported by the underlying operating system.
    * This is a very efficient way to serve files.<p>
    * The actual serve is asynchronous and may not complete until some time after this method has returned.
+   * <p>
+   * This is a terminal action, like {@link #end()} and {@link #reset()}, so you can only call one of the
+   * three methods as the last step in dealing with your response.
+   * </p>
    *
    * @param filename  path to the file to serve
    * @param offset offset to start serving from
@@ -356,6 +390,114 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
    * @return a future completed with the body result
    */
   Future<Void> sendFile(String filename, long offset, long length);
+
+  /**
+   * Same as {@link #sendFile(FileChannel, long)} using length @code{Long.MAX_VALUE} which means until the end of the
+   * file.
+   * <p>
+   * This is a terminal action, like {@link #end()} and {@link #reset()}, so you can only call one of the
+   * three methods as the last step in dealing with your response.
+   * </p>
+   *
+   * @param channel the file channel to the file to serve
+   * @return a future completed with the body result
+   */
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  @Unstable
+  default Future<Void> sendFile(FileChannel channel) {
+    return sendFile(channel, 0);
+  }
+
+  /**
+   * Same as {@link #sendFile(FileChannel, long, long)} using length @code{Long.MAX_VALUE} which means until the end of the
+   * file.
+   * <p>
+   * This is a terminal action, like {@link #end()} and {@link #reset()}, so you can only call one of the
+   * three methods as the last step in dealing with your response.
+   * </p>
+   *
+   * @param channel the file channel to the file to serve
+   * @param offset offset to start serving from
+   * @return a future completed with the body result
+   */
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  @Unstable
+  default Future<Void> sendFile(FileChannel channel, long offset) {
+    return sendFile(channel, offset, Long.MAX_VALUE);
+  }
+
+  /**
+   * Ask the OS to stream a file as specified by {@code channel} directly
+   * from disk to the outgoing connection, bypassing userspace altogether
+   * (where supported by the underlying operating system). Contrary to {@link HttpServerResponse#sendFile(String, long, long)},
+   * the caller is responsible to close {@code channel} when no more needed.
+   * This is a very efficient way to serve files.<p>
+   * The actual serve is asynchronous and may not complete until some time after this method has returned.
+   * The developer is responsible to set the adequate Content-Type with {@link #putHeader(String, String)}. If not
+   * application/octet-stream will be set as default Content-Type.
+   * <p>
+   * This is a terminal action, like {@link #end()} and {@link #reset()}, so you can only call one of the
+   * three methods as the last step in dealing with your response.
+   * </p>
+   *
+   * @param channel the file channel to the file to serve
+   * @param offset offset to start serving from
+   * @param length the number of bytes to send
+   * @return a future completed with the body result
+   */
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  @Unstable
+  Future<Void> sendFile(FileChannel channel, long offset, long length);
+
+  /**
+   * Same as {@link #sendFile(FileChannel)} with {@link RandomAccessFile}
+   * <p>
+   * This is a terminal action, like {@link #end()} and {@link #reset()}, so you can only call one of the
+   * three methods as the last step in dealing with your response.
+   * </p>
+   *
+   * @param file the file to serve
+   * @return a future completed with the body result
+   */
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  @Unstable
+  default Future<Void> sendFile(RandomAccessFile file) {
+    return sendFile(file, 0);
+  }
+
+  /**
+   *
+   * Same as {@link #sendFile(FileChannel, long)} with {@link RandomAccessFile}
+   * <p>
+   * This is a terminal action, like {@link #end()} and {@link #reset()}, so you can only call one of the
+   * three methods as the last step in dealing with your response.
+   * </p>
+   *
+   * @param file the file to serve
+   * @param offset offset to start serving from
+   * @return a future completed with the body result
+   */
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  @Unstable
+  default Future<Void> sendFile(RandomAccessFile file, long offset) {
+    return sendFile(file, offset, Long.MAX_VALUE);
+  }
+
+  /**
+   * Same as {@link #sendFile(FileChannel, long, long)} with {@link RandomAccessFile}
+   * <p>
+   * This is a terminal action, like {@link #end()} and {@link #reset()}, so you can only call one of the
+   * three methods as the last step in dealing with your response.
+   * </p>
+   *
+   * @param file the file to serve
+   * @param offset offset to start serving from
+   * @param length the number of bytes to send
+   * @return a future completed with the body result
+   */
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  @Unstable
+  Future<Void> sendFile(RandomAccessFile file, long offset, long length);
 
   /**
    * @return has the response already ended?
@@ -402,24 +544,24 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
   /**
    * @return the id of the stream of this response, {@literal -1} for HTTP/1.x
    */
-  int streamId();
+  long streamId();
 
   /**
-   * Like {@link #push(HttpMethod, String, String, MultiMap)} with no headers.
+   * Like {@link #push(HttpMethod, HostAndPort, String, MultiMap)} with no headers.
    */
-  default Future<HttpServerResponse> push(HttpMethod method, String host, String path) {
-    return push(method, host, path, (MultiMap) null);
+  default Future<HttpServerResponse> push(HttpMethod method, HostAndPort authority, String path) {
+    return push(method, authority, path, null);
   }
 
   /**
-   * Like {@link #push(HttpMethod, String, String, MultiMap)} with the host copied from the current request.
+   * Like {@link #push(HttpMethod, HostAndPort, String, MultiMap)} with the host copied from the current request.
    */
   default Future<HttpServerResponse> push(HttpMethod method, String path, MultiMap headers) {
-    return push(method, (HostAndPort) null, path, headers);
+    return push(method, null, path, headers);
   }
 
   /**
-   * Like {@link #push(HttpMethod, String, String, MultiMap)} with the host copied from the current request.
+   * Like {@link #push(HttpMethod, HostAndPort, String, MultiMap)} with the host copied from the current request.
    */
   default Future<HttpServerResponse> push(HttpMethod method, String path) {
     return push(method, null, path);
@@ -445,30 +587,10 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
   Future<HttpServerResponse> push(HttpMethod method, HostAndPort authority, String path, MultiMap headers);
 
   /**
-   * Push a response to the client.<p/>
-   *
-   * The {@code handler} will be notified with a <i>success</i> when the push can be sent and with
-   * a <i>failure</i> when the client has disabled push or reset the push before it has been sent.<p/>
-   *
-   * The {@code handler} may be queued if the client has reduced the maximum number of streams the server can push
-   * concurrently.<p/>
-   *
-   * Push can be sent only for peer initiated streams and if the response is not ended.
-   *
-   * @param method the method of the promised request
-   * @param host the host of the promised request
-   * @param path the path of the promised request
-   * @param headers the headers of the promised request
-   * @return a future notified when the response can be written
-   * @deprecated instead use {@link #push(HttpMethod, HostAndPort, String, MultiMap)}
+   * Equivalent to calling {@link #reset(long)} with {@code 0}.
+   * @see #reset(long)
    */
-  @Deprecated
-  Future<HttpServerResponse> push(HttpMethod method, String host, String path, MultiMap headers);
-
-  /**
-   * Reset this HTTP/2 stream with the error code {@code 0}.
-   */
-  default boolean reset() {
+  default Future<Void> reset() {
     return reset(0L);
   }
 
@@ -481,11 +603,30 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
    * </ul>
    * <p/>
    * When the response has already been sent nothing happens and {@code false} is returned as indicator.
+   * <p>
+   * This is a terminal action, like {@link #end()} and {@link #sendFile(String)}, so you can only call one of the three
+   * methods as the last step in dealing with your response.
+   * </p>
+   * <p>
+   * Stream reset should be avoided because the implementation works partially for HTTP/3 and reset error codes depends on
+   * the version of the protocol, {@link #cancel()} should be used instead.
+   * </p>
    *
    * @param code the error code
    * @return {@code true} when reset has been performed
    */
-  boolean reset(long code);
+  Future<Void> reset(long code);
+
+  /**
+   * Attempt to cancel the request according to the semantics of the underlying HTTP implementation.
+   * <ul>
+   *   <li>for HTTP/1.x, this closes the connection when the current request is inflight</li>
+   *   <li>for HTTP/2, this performs send an HTTP/2 reset frame with the error {@code 0x08}</li>
+   *   <li>for HTTP/3, this resets or abort reading the underlying QUIC stream with code {@code 0x10c}</li>
+   * </ul>
+   * @return a future notifying the cancellation outcome
+   */
+  Future<Boolean> cancel();
 
   /**
    * Write an HTTP/2 frame to the response, allowing to extend the HTTP/2 protocol.<p>
@@ -517,7 +658,7 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
    */
   @Fluent
   default HttpServerResponse setStreamPriority(StreamPriority streamPriority) {
-      return this;
+    return this;
   }
 
   /**
@@ -603,4 +744,17 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
    * @return the cookie, if it existed, or {@code null}
    */
   @Nullable Cookie removeCookie(String name, String domain, String path, boolean invalidate);
+
+  /**
+   * <p>Write an <a href="https://datatracker.ietf.org/doc/html/rfc7838"HTTP Alternative Services</a> advertisement for
+   * the given request and its authority, according to the underlying protocol.</p>
+   *
+   * <p>For HTTP/1.x this sets an {@link HttpHeaders#ALT_SVC} header, otherwise it writes a
+   * <a href="https://datatracker.ietf.org/doc/html/rfc7838#section-7.2">custom frame</a>.</p>
+   *
+   * <p>Example usage: {@code response.writeAltSvc("h3=\":443\"")}</p>
+   *
+   * @param advertisement the advertisement
+   */
+  Future<Void> writeAltSvc(String advertisement);
 }

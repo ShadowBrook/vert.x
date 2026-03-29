@@ -1,0 +1,242 @@
+/*
+ * Copyright (c) 2011-2026 Contributors to the Eclipse Foundation
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0, or the Apache License, Version 2.0
+ * which is available at https://www.apache.org/licenses/LICENSE-2.0.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
+ */
+package io.vertx.core.net;
+
+import io.vertx.codegen.annotations.DataObject;
+
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Configuration of a {@link NetClient}
+ *
+ * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
+ */
+@DataObject
+public class TcpClientConfig extends TcpEndpointConfig {
+
+  private Duration connectTimeout;
+  private ProxyOptions proxyOptions;
+  private List<String> nonProxyHosts;
+  private SocketAddress localAddress;
+  private int reconnectAttempts;
+  private Duration reconnectInterval;
+
+  public TcpClientConfig() {
+    super();
+    this.connectTimeout = Duration.ofMillis(ClientOptionsBase.DEFAULT_CONNECT_TIMEOUT);
+    this.proxyOptions = null;
+    this.nonProxyHosts = null;
+    this.localAddress = null;
+    this.reconnectAttempts = NetClientOptions.DEFAULT_RECONNECT_ATTEMPTS;
+    this.reconnectInterval = Duration.ofMillis(NetClientOptions.DEFAULT_RECONNECT_INTERVAL);
+  }
+
+  public TcpClientConfig(TcpClientConfig other) {
+    super(other);
+    this.connectTimeout = other.connectTimeout;
+    this.proxyOptions = other.proxyOptions != null ? new ProxyOptions(other.proxyOptions) : null;
+    this.nonProxyHosts = other.nonProxyHosts != null ? new ArrayList<>(other.nonProxyHosts) : null;
+    this.localAddress = other.localAddress;
+    this.reconnectAttempts = other.reconnectAttempts;
+    this.reconnectInterval = other.reconnectInterval;
+  }
+
+  public TcpClientConfig(NetClientOptions options) {
+    this((ClientOptionsBase)options);
+    String localAddress = options.getLocalAddress();
+    if (localAddress != null) {
+      setLocalAddress(SocketAddress.inetSocketAddress(0, localAddress));
+    }
+    setReconnectAttempts(options.getReconnectAttempts());
+    setReconnectInterval(Duration.ofMillis(options.getReconnectInterval()));
+  }
+
+  public TcpClientConfig(ClientOptionsBase options) {
+    super(options);
+    setConnectTimeout(Duration.ofMillis(options.getConnectTimeout()));
+    setMetricsName(options.getMetricsName());
+    setNonProxyHosts(options.getNonProxyHosts() != null ? new ArrayList<>(options.getNonProxyHosts()) : null);
+    setProxyOptions(options.getProxyOptions() != null ? new ProxyOptions(options.getProxyOptions()) : null);
+  }
+
+  public TcpClientConfig setTransportConfig(TcpConfig transportConfig) {
+    return (TcpClientConfig)super.setTransportConfig(transportConfig);
+  }
+
+  public TcpClientConfig setIdleTimeout(Duration idleTimeout) {
+    return (TcpClientConfig)super.setIdleTimeout(idleTimeout);
+  }
+
+  public TcpClientConfig setReadIdleTimeout(Duration idleTimeout) {
+    return (TcpClientConfig)super.setReadIdleTimeout(idleTimeout);
+  }
+
+  public TcpClientConfig setWriteIdleTimeout(Duration idleTimeout) {
+    return (TcpClientConfig)super.setWriteIdleTimeout(idleTimeout);
+  }
+
+  @Override
+  public TcpClientConfig setMetricsName(String metricsName) {
+    return (TcpClientConfig)super.setMetricsName(metricsName);
+  }
+
+  @Override
+  public TcpClientConfig setLogConfig(LogConfig config) {
+    return (TcpClientConfig)super.setLogConfig(config);
+  }
+
+  public TcpClientConfig setSsl(boolean ssl) {
+    return (TcpClientConfig)super.setSsl(ssl);
+  }
+
+  /**
+   * @return the value of connect timeout
+   */
+  public Duration getConnectTimeout() {
+    return connectTimeout;
+  }
+
+  /**
+   * Set the connect timeout
+   *
+   * @param connectTimeout  connect timeout, in ms
+   * @return a reference to this, so the API can be used fluently
+   */
+  public TcpClientConfig setConnectTimeout(Duration connectTimeout) {
+    if (connectTimeout.isNegative() || connectTimeout.isZero()) {
+      throw new IllegalArgumentException("connectTimeout must be >= 0");
+    }
+    this.connectTimeout = connectTimeout;
+    return this;
+  }
+
+  /**
+   * Get proxy options for connections
+   *
+   * @return proxy options
+   */
+  public ProxyOptions getProxyOptions() {
+    return proxyOptions;
+  }
+
+  /**
+   * Set proxy options for connections via CONNECT proxy (e.g. Squid) or a SOCKS proxy.
+   *
+   * @param proxyOptions proxy options object
+   * @return a reference to this, so the API can be used fluently
+   */
+  public TcpClientConfig setProxyOptions(ProxyOptions proxyOptions) {
+    this.proxyOptions = proxyOptions;
+    return this;
+  }
+
+  /**
+   * @return the list of non proxies hosts
+   */
+  public List<String> getNonProxyHosts() {
+    return nonProxyHosts;
+  }
+
+  /**
+   * Set a list of remote hosts that are not proxied when the client is configured to use a proxy. This
+   * list serves the same purpose than the JVM {@code nonProxyHosts} configuration.
+   *
+   * <p> Entries can use the <i>*</i> wildcard character for pattern matching, e.g <i>*.example.com</i> matches
+   * <i>www.example.com</i>.
+   *
+   * @param nonProxyHosts the list of non proxies hosts
+   * @return a reference to this, so the API can be used fluently
+   */
+  public TcpClientConfig setNonProxyHosts(List<String> nonProxyHosts) {
+    this.nonProxyHosts = nonProxyHosts;
+    return this;
+  }
+
+  /**
+   * Add a {@code host} to the {@link #getNonProxyHosts()} list.
+   *
+   * @param host the added host
+   * @return a reference to this, so the API can be used fluently
+   */
+  public TcpClientConfig addNonProxyHost(String host) {
+    if (nonProxyHosts == null) {
+      nonProxyHosts = new ArrayList<>();
+    }
+    nonProxyHosts.add(host);
+    return this;
+  }
+
+  /**
+   * @return the local address to bind for network connections.
+   */
+  public SocketAddress getLocalAddress() {
+    return localAddress;
+  }
+
+  /**
+   * Set the local address to bind for network connections. When the local address is null,
+   * it will pick any local address and a random port, the default local address is null.
+   *
+   * @param localAddress the local address
+   * @return a reference to this, so the API can be used fluently
+   */
+  public TcpClientConfig setLocalAddress(SocketAddress localAddress) {
+    if (localAddress != null && localAddress.isDomainSocket()) {
+      throw new IllegalArgumentException("Cannot set a domain socket local address");
+    }
+    this.localAddress = localAddress;
+    return this;
+  }
+
+  /**
+   * @return  the value of reconnect attempts
+   */
+  public int getReconnectAttempts() {
+    return reconnectAttempts;
+  }
+
+  /**
+   * Set the value of reconnect attempts
+   *
+   * @param attempts  the maximum number of reconnect attempts
+   * @return a reference to this, so the API can be used fluently
+   */
+  public TcpClientConfig setReconnectAttempts(int attempts) {
+    if (attempts < -1) {
+      throw new IllegalArgumentException("reconnect attempts must be >= -1");
+    }
+    this.reconnectAttempts = attempts;
+    return this;
+  }
+
+  /**
+   * @return  the value of reconnect interval
+   */
+  public Duration getReconnectInterval() {
+    return reconnectInterval;
+  }
+
+  /**
+   * Set the reconnect interval
+   *
+   * @param interval  the reconnect interval
+   * @return a reference to this, so the API can be used fluently
+   */
+  public TcpClientConfig setReconnectInterval(Duration interval) {
+    if (interval.isNegative() || interval.isZero()) {
+      throw new IllegalArgumentException("reconnect interval must be >= 1");
+    }
+    this.reconnectInterval = interval;
+    return this;
+  }
+}

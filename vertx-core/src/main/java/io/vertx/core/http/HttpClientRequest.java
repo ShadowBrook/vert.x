@@ -252,7 +252,7 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
    * has been set using this method, then the {@code handler} will be called.
    * <p>
    * You can then continue to write data to the request body and later end it. This is normally used in conjunction with
-   * the {@link #sendHead()} method to force the request header to be written before the request has ended.
+   * the {@link #writeHead()} method to force the request header to be written before the request has ended.
    *
    * @return a reference to this, so the API can be used fluently
    */
@@ -278,10 +278,25 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
    * This is normally used to implement HTTP 100-continue handling, see {@link #continueHandler(io.vertx.core.Handler)} for
    * more information.
    *
-   * @return a future notified when the {@link HttpVersion} if it can be determined or {@code null} otherwise
-   * @throws java.lang.IllegalStateException when no response handler is set
+   * @return a future notified with the result of the write operation
+   * @throws java.lang.IllegalStateException if the head has already been written
+   * @deprecated instead use {@link #writeHead()}, this is scheduled for removal in Vert.x 6
    */
+  @Deprecated(since = "5.1.0", forRemoval = true)
   Future<Void> sendHead();
+
+  /**
+   * Write the head of the request.
+   * <p>
+   * This can be used to implement HTTP 100-continue handling, see {@link #continueHandler(io.vertx.core.Handler)} for
+   * more information.
+   *
+   * @return a future notified with the result of the write operation
+   * @throws java.lang.IllegalStateException if the head has already been written
+   */
+  default Future<Void> writeHead() {
+    return sendHead();
+  }
 
   /**
    * Create an HTTP tunnel to the server.
@@ -313,7 +328,7 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
   /**
    * Send the request with an empty body.
    *
-   * @return a future notified when the last bytes of the request is written
+   * @return a future notified when the HTTP response is available
    */
   default Future<HttpClientResponse> send() {
     end();
@@ -323,7 +338,7 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
   /**
    * Send the request with a string {@code body}.
    *
-   * @return a future notified when the last bytes of the request is written
+   * @return a future notified when the HTTP response is available
    */
   default Future<HttpClientResponse> send(String body) {
     end(body);
@@ -333,7 +348,7 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
   /**
    * Send the request with a buffer {@code body}.
    *
-   * @return a future notified when the last bytes of the request is written
+   * @return a future notified when the HTTP response is available
    */
   default Future<HttpClientResponse> send(Buffer body) {
     end(body);
@@ -341,12 +356,21 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
   }
 
   /**
+   * Like {@link #send()} but with a {@code form}. The content will be set to {@code application/x-www-form-urlencoded}
+   * or {@code multipart/form-data} according to the nature of the form.
+   *
+   * @param form the form to send
+   * @return a future notified when the HTTP response is available
+   */
+  Future<HttpClientResponse> send(ClientForm form);
+
+  /**
    * Send the request with a stream {@code body}.
    *
    * <p> If the {@link HttpHeaders#CONTENT_LENGTH} is set then the request assumes this is the
    * length of the {stream}, otherwise the request will set a chunked {@link HttpHeaders#CONTENT_ENCODING}.
    *
-   * @return a future notified when the last bytes of the request is written
+   * @return a future notified when the HTTP response is available
    */
   default Future<HttpClientResponse> send(ReadStream<Buffer> body) {
     MultiMap headers = headers();
@@ -387,7 +411,7 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
   Future<Void> end(Buffer chunk);
 
   /**
-   * Ends the request. If no data has been written to the request body, and {@link #sendHead()} has not been called then
+   * Ends the request. If no data has been written to the request body, and {@link #writeHead()} has not been called then
    * the actual request won't get written until this method gets called.
    * <p>
    * Once the request has ended, it cannot be used any more,
@@ -437,7 +461,7 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
    *
    * @see #reset(long)
    */
-  default boolean reset() {
+  default Future<Void> reset() {
     return reset(0L);
   }
 
@@ -445,17 +469,33 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
    * Reset this request:
    * <p/>
    * <ul>
-   *   <li>for HTTP/2, this performs send an HTTP/2 reset frame with the specified error {@code code}</li>
    *   <li>for HTTP/1.x, this closes the connection when the current request is inflight</li>
+   *   <li>for HTTP/2, this performs send an HTTP/2 reset frame with the specified error {@code code}</li>
+   *   <li>for HTTP/3, this is only effective if the stream has not been fully sent</li>
    * </ul>
    * <p/>
    * When the request has not yet been sent, the request will be aborted and false is returned as indicator.
    * <p/>
+   * <p>
+   * Stream reset should be avoided because the implementation works partially for HTTP/3 and reset error codes depends on
+   * the version of the protocol, {@link #cancel()} should be used instead.
+   * </p>
    *
    * @param code the error code
    * @return {@code true} when reset has been performed
    */
-  boolean reset(long code);
+  Future<Void> reset(long code);
+
+  /**
+   * Attempt to cancel the request according to the semantics of the underlying HTTP implementation.
+   * <ul>
+   *   <li>for HTTP/1.x, this closes the connection when the current request is inflight</li>
+   *   <li>for HTTP/2, this performs send an HTTP/2 reset frame with the error {@code 0x08}</li>
+   *   <li>for HTTP/3, this resets or abort reading the underlying QUIC stream with code {@code 0x10c}</li>
+   * </ul>
+   * @return a future notifying the cancellation outcome
+   */
+  Future<Boolean> cancel();
 
   /**
    * Reset this request:
@@ -472,7 +512,7 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
    * @param cause an optional cause that can be attached to the error code
    * @return true when reset has been performed
    */
-  boolean reset(long code, Throwable cause);
+  Future<Void> reset(long code, Throwable cause);
 
   /**
    * @return the {@link HttpConnection} associated with this request
@@ -486,7 +526,7 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
    * The frame is sent immediatly and is not subject to flow control.<p>
    *
    * This method must be called after the request headers have been sent and only for the protocol HTTP/2.
-   * The {@link #sendHead()} should be used for this purpose.
+   * The {@link #writeHead()} should be used for this purpose.
    *
    * @param type the 8-bit frame type
    * @param flags the 8-bit frame flags
@@ -499,8 +539,8 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
    * @return the id of the stream of this response, {@literal -1} when it is not yet determined, i.e
    *         the request has not been yet sent or it is not supported HTTP/1.x
    */
-  default int streamId() {
-    return -1;
+  default long streamId() {
+    return -1L;
   }
 
   /**

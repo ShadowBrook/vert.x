@@ -11,7 +11,6 @@
 package io.vertx.core.spi.endpoint;
 
 import io.vertx.core.Future;
-import io.vertx.core.json.JsonObject;
 import io.vertx.core.net.Address;
 import io.vertx.core.net.SocketAddress;
 
@@ -19,11 +18,11 @@ import io.vertx.core.net.SocketAddress;
  * Endpoint resolver Service Provider Interface (SPI).
  *
  * <p> {@link #resolve)} resolves an address to resolver managed state {@code <S>}. State modifying methods can be called
- * concurrently, the implementation is responsible to manage the concurrent state modifications.
+ * concurrently, the implementation is responsible to manage concurrent state modifications.
  *
- * @param <D> the type of the state managed by the resolver
  * @param <A> the type of {@link Address} resolved
- * @param <S> the type of the server
+ * @param <S> the type of the endpoint server
+ * @param <D> the type of the data managed by the resolver
  * @param <E> the type of the endpoint
  */
 public interface EndpointResolver<A extends Address, S, D, E> {
@@ -37,21 +36,21 @@ public interface EndpointResolver<A extends Address, S, D, E> {
   A tryCast(Address address);
 
   /**
-   * Returns the socket address of a given {@code endpoint}.
+   * Returns the socket address of a given {@code server}.
    *
-   * @param server the endpoint
-   * @return the endpoint socket address
+   * @param server the server
+   * @return the server socket address
    */
   SocketAddress addressOf(S server);
 
   /**
-   * Returns the known properties of a give {@code server}.
+   * Returns the protocol id of a given {@code} server.
    *
-   * @param server the endpoint
-   * @return the properties as a JSON object
+   * @param server the server
+   * @return the protocol if of the server or {@code null} if unknown
    */
-  default JsonObject propertiesOf(S server) {
-    return new JsonObject();
+  default String protocolOf(S server) {
+    return null;
   }
 
   /**
@@ -64,20 +63,30 @@ public interface EndpointResolver<A extends Address, S, D, E> {
   Future<D> resolve(A address, EndpointBuilder<E, S> builder);
 
   /**
-   * Return the current list of endpoint visible by the resolver.
+   * Return the current endpoint visible by the resolver.
    *
-   * @param data the resolver state
+   * @param state the resolver state
    * @return the list of endpoints
    */
-  E endpoint(D data);
+  E endpoint(D state);
 
   /**
    * Check the state validity.
    *
-   * @param data resolver state
+   * @param state resolver state
    * @return the state validity
    */
-  boolean isValid(D data);
+  boolean isValid(D state);
+
+  /**
+   *
+   * @param address
+   * @param state
+   * @return
+   */
+  default Future<D> refresh(A address, D state) {
+    return null;
+  }
 
   /**
    * Dispose the state.

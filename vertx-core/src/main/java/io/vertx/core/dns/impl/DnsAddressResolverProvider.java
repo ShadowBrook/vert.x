@@ -16,10 +16,11 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.resolver.*;
 import io.netty.resolver.dns.*;
 import io.netty.util.NetUtil;
-import io.vertx.core.*;
+import io.vertx.core.Future;
+import io.vertx.core.Promise;
+import io.vertx.core.VertxException;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.dns.AddressResolverOptions;
-import io.vertx.core.impl.HostnameResolver;
 import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.internal.VertxInternal;
 import io.vertx.core.spi.dns.AddressResolverProvider;
@@ -58,9 +59,9 @@ public class DnsAddressResolverProvider implements AddressResolverProvider, Host
 
   private DnsAddressResolverProvider(VertxInternal vertx, AddressResolverOptions options) {
     List<String> dnsServers = options.getServers();
-    if (dnsServers != null && dnsServers.size() > 0) {
+    if (dnsServers != null && !dnsServers.isEmpty()) {
       for (String dnsServer : dnsServers) {
-        int sep = dnsServer.indexOf(':');
+        int sep = dnsServer.lastIndexOf(':');
         String ipAddress;
         int port;
         if (sep != -1) {
@@ -101,11 +102,11 @@ public class DnsAddressResolverProvider implements AddressResolverProvider, Host
     this.vertx = vertx;
     this.hostsPath = options.getHostsPath();
     this.hostsValue = options.getHostsValue();
-    this.hostsRefreshPeriodNanos = options.getHostsRefreshPeriod();
+    this.hostsRefreshPeriodNanos = options.getHostsRefreshPeriodUnit().toNanos(options.getHostsRefreshPeriod());
 
     DnsNameResolverBuilder builder = new DnsNameResolverBuilder();
     builder.hostsFileEntriesResolver(this);
-    builder.channelFactory(() -> vertx.transport().datagramChannel());
+    builder.datagramChannelFactory(vertx.transport().datagramChannelFactory());
     builder.socketChannelFactory(() -> (SocketChannel) vertx.transport().channelFactory(false).newChannel());
     builder.nameServerProvider(nameServerAddressProvider);
     builder.queryServerAddressStream(new ThreadLocalNameServerAddressStream(nameServerAddressProvider, ""));
@@ -122,7 +123,7 @@ public class DnsAddressResolverProvider implements AddressResolverProvider, Host
       builder.searchDomains(options.getSearchDomains());
       int ndots = options.getNdots();
       if (ndots == -1) {
-        ndots = HostnameResolver.DEFAULT_NDOTS_RESOLV_OPTION;
+        ndots = AddressResolverOptions.DEFAULT_NDOTS;
       }
       builder.ndots(ndots);
     }
@@ -130,7 +131,7 @@ public class DnsAddressResolverProvider implements AddressResolverProvider, Host
     this.dnsNameResolverBuilder = builder;
     this.resolverGroup = new DnsAddressResolverGroup(builder) {
       @Override
-      protected io.netty.resolver.AddressResolver<InetSocketAddress> newAddressResolver(EventLoop eventLoop, NameResolver<InetAddress> resolver) throws Exception {
+      protected io.netty.resolver.AddressResolver<InetSocketAddress> newAddressResolver(EventLoop eventLoop, io.netty.resolver.NameResolver<InetAddress> resolver) throws Exception {
         io.netty.resolver.AddressResolver<InetSocketAddress> addressResolver;
         if (options.isRoundRobinInetAddress()) {
           addressResolver = new RoundRobinInetAddressResolver(eventLoop, resolver).asAddressResolver();
@@ -230,7 +231,7 @@ public class DnsAddressResolverProvider implements AddressResolverProvider, Host
   private void refreshHostsFile() {
     HostsFileEntries entries;
     if (hostsPath != null) {
-      File file = vertx.resolveFile(hostsPath).getAbsoluteFile();
+      File file = vertx.fileResolver().resolve(hostsPath).getAbsoluteFile();
       try {
         if (!file.exists() || !file.isFile()) {
           throw new IOException();

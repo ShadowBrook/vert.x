@@ -17,17 +17,11 @@ import io.netty.channel.*;
 import io.netty.channel.socket.DatagramChannel;
 import io.netty.channel.socket.InternetProtocolFamily;
 import io.vertx.core.datagram.DatagramSocketOptions;
-import io.vertx.core.net.ClientOptionsBase;
-import io.vertx.core.net.NetServerOptions;
-import io.vertx.core.buffer.impl.PartialPooledByteBufAllocator;
+import io.vertx.core.impl.transports.NioTransport;
+import io.vertx.core.net.TcpConfig;
 import io.vertx.core.net.impl.SocketAddressImpl;
-import io.vertx.core.impl.transports.JDKTransport;
 
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.net.NetworkInterface;
-import java.net.SocketAddress;
-import java.net.SocketException;
+import java.net.*;
 import java.util.concurrent.ThreadFactory;
 
 /**
@@ -65,7 +59,7 @@ public interface Transport {
 
   default SocketAddress convert(io.vertx.core.net.SocketAddress address) {
     if (address.isDomainSocket()) {
-      throw new IllegalArgumentException("Domain socket are not supported by JDK transport, you need to use native transport to use them");
+      throw new IllegalArgumentException("Domain sockets require JDK 16 and above, or the usage of a native transport");
     } else {
       InetAddress ip = ((SocketAddressImpl) address).ipAddress();
       if (ip != null) {
@@ -84,6 +78,8 @@ public interface Transport {
     }
   }
 
+  IoHandlerFactory ioHandlerFactory();
+
   /**
    * @param type one of {@link #ACCEPTOR_EVENT_LOOP_GROUP} or {@link #IO_EVENT_LOOP_GROUP}.
    * @param nThreads the number of threads that will be used by this instance.
@@ -92,12 +88,9 @@ public interface Transport {
    *
    * @return a new event loop group
    */
-  EventLoopGroup eventLoopGroup(int type, int nThreads, ThreadFactory threadFactory, int ioRatio);
-
-  /**
-   * @return a new datagram channel
-   */
-  DatagramChannel datagramChannel();
+  default EventLoopGroup eventLoopGroup(int type, int nThreads, ThreadFactory threadFactory, int ioRatio) {
+    return new MultiThreadIoEventLoopGroup(nThreads, threadFactory, ioHandlerFactory());
+  }
 
   /**
    * @return a new datagram channel
@@ -105,19 +98,23 @@ public interface Transport {
   DatagramChannel datagramChannel(InternetProtocolFamily family);
 
   /**
-   * @return the type for channel
-   * @param domainSocket whether to create a unix domain channel or a socket channel
+   * @return the datagram channel
+   */
+  ChannelFactory<? extends DatagramChannel> datagramChannelFactory();
+
+  /**
+   * @return the suitable factory for TCP channels
+   * @param domainSocket whether to create a unix domain socket channel or a TCP socket channel
    */
   ChannelFactory<? extends Channel> channelFactory(boolean domainSocket);
 
   /**
-   * @return the type for server channel
-   * @param domainSocket whether to create a server unix domain channel or a regular server socket channel
+   * @return the suitable factory for TCP server channels
+   * @param domainSocket whether to create a unix domain server socket channel or a TCP server socket channel
    */
   ChannelFactory<? extends ServerChannel> serverChannelFactory(boolean domainSocket);
 
   default void configure(DatagramChannel channel, DatagramSocketOptions options) {
-    channel.config().setAllocator(PartialPooledByteBufAllocator.INSTANCE);
     if (options.getSendBufferSize() != -1) {
       channel.config().setSendBufferSize(options.getSendBufferSize());
     }
@@ -130,7 +127,7 @@ public interface Transport {
       channel.config().setTrafficClass(options.getTrafficClass());
     }
     channel.config().setBroadcast(options.isBroadcast());
-    if (this instanceof JDKTransport) {
+    if (this instanceof NioTransport) {
       channel.config().setLoopbackModeDisabled(options.isLoopbackModeDisabled());
       if (options.getMulticastTimeToLive() != -1) {
         channel.config().setTimeToLive(options.getMulticastTimeToLive());
@@ -145,52 +142,23 @@ public interface Transport {
     }
   }
 
-  default void configure(ClientOptionsBase options, int connectTimeout, boolean domainSocket, Bootstrap bootstrap) {
+  default void configure(TcpConfig options, boolean domainSocket, Bootstrap bootstrap) {
     if (!domainSocket) {
-      bootstrap.option(ChannelOption.SO_REUSEADDR, options.isReuseAddress());
       bootstrap.option(ChannelOption.TCP_NODELAY, options.isTcpNoDelay());
       bootstrap.option(ChannelOption.SO_KEEPALIVE, options.isTcpKeepAlive());
-    }
-    if (options.getLocalAddress() != null) {
-      bootstrap.localAddress(options.getLocalAddress(), 0);
-    }
-    if (options.getSendBufferSize() != -1) {
-      bootstrap.option(ChannelOption.SO_SNDBUF, options.getSendBufferSize());
-    }
-    if (options.getReceiveBufferSize() != -1) {
-      bootstrap.option(ChannelOption.SO_RCVBUF, options.getReceiveBufferSize());
-      bootstrap.option(ChannelOption.RCVBUF_ALLOCATOR, new FixedRecvByteBufAllocator(options.getReceiveBufferSize()));
     }
     if (options.getSoLinger() != -1) {
       bootstrap.option(ChannelOption.SO_LINGER, options.getSoLinger());
     }
-    if (options.getTrafficClass() != -1) {
-      bootstrap.option(ChannelOption.IP_TOS, options.getTrafficClass());
-    }
-    bootstrap.option(ChannelOption.CONNECT_TIMEOUT_MILLIS, connectTimeout);
   }
 
-  default void configure(NetServerOptions options, boolean domainSocket, ServerBootstrap bootstrap) {
-    bootstrap.option(ChannelOption.SO_REUSEADDR, options.isReuseAddress());
+  default void configure(TcpConfig options, boolean domainSocket, ServerBootstrap bootstrap) {
     if (!domainSocket) {
-      bootstrap.childOption(ChannelOption.SO_KEEPALIVE, options.isTcpKeepAlive());
       bootstrap.childOption(ChannelOption.TCP_NODELAY, options.isTcpNoDelay());
-    }
-    if (options.getSendBufferSize() != -1) {
-      bootstrap.childOption(ChannelOption.SO_SNDBUF, options.getSendBufferSize());
-    }
-    if (options.getReceiveBufferSize() != -1) {
-      bootstrap.childOption(ChannelOption.SO_RCVBUF, options.getReceiveBufferSize());
-      bootstrap.childOption(ChannelOption.RCVBUF_ALLOCATOR, new FixedRecvByteBufAllocator(options.getReceiveBufferSize()));
+      bootstrap.childOption(ChannelOption.SO_KEEPALIVE, options.isTcpKeepAlive());
     }
     if (options.getSoLinger() != -1) {
       bootstrap.childOption(ChannelOption.SO_LINGER, options.getSoLinger());
-    }
-    if (options.getTrafficClass() != -1) {
-      bootstrap.childOption(ChannelOption.IP_TOS, options.getTrafficClass());
-    }
-    if (options.getAcceptBacklog() != -1) {
-      bootstrap.option(ChannelOption.SO_BACKLOG, options.getAcceptBacklog());
     }
   }
 }

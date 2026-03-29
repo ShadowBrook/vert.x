@@ -10,13 +10,9 @@
  */
 package io.vertx.core.internal.pool;
 
-import io.vertx.core.AsyncResult;
-import io.vertx.core.Future;
-import io.vertx.core.Handler;
-import io.vertx.core.Promise;
+import io.vertx.core.*;
 import io.vertx.core.http.ConnectionPoolTooBusyException;
 import io.vertx.core.internal.ContextInternal;
-import io.vertx.core.impl.future.Listener;
 
 import java.util.AbstractList;
 import java.util.ArrayList;
@@ -58,12 +54,12 @@ import java.util.function.Predicate;
  *
  * <h3>Connection eviction</h3>
  *
- * Connections can be evicted from the pool with {@link ConnectionPool#evict(Predicate, Handler)}. It
+ * Connections can be evicted from the pool with {@link ConnectionPool#evict(Predicate)}. It
  * can be used to implement keep alive timeout.
  *
  * <h3>Waiter lifecycle</h3>
  *
- * Connection requests are done with {@link ConnectionPool#acquire(ContextInternal, int, Handler)}. Such request
+ * Connection requests are done with {@link ConnectionPool#acquire(ContextInternal, int)}. Such request
  * creates a {@link PoolWaiter}. When such request is made
  *
  * <ul>
@@ -74,12 +70,13 @@ import java.util.function.Predicate;
  * </ul>
  *
  * A connection acquisition a {@link PoolWaiter.Listener} can be provided, letting the requester
- * to get a reference on the waiter and later use {@link #cancel(PoolWaiter, Handler)} to cancel
+ * to get a reference on the waiter and later use {@link #cancel(PoolWaiter)} to cancel
  * a request.
  */
 public class SimpleConnectionPool<C> implements ConnectionPool<C> {
 
   private static final Future POOL_CLOSED = Future.failedFuture("Pool closed");
+  private static final VertxException POOL_CLOSED_EXCEPTION = new VertxException("Pool closed", true);
 
   /**
    * Select the first available available connection with the same event loop.
@@ -373,13 +370,13 @@ public class SimpleConnectionPool<C> implements ConnectionPool<C> {
         @Override
         public void run() {
           if (waiter != null) {
-            Future<Lease<C>> waiterFailure;
+            Throwable waiterFailure;
             if (pool.closed) {
-              waiterFailure = POOL_CLOSED;
+              waiterFailure = POOL_CLOSED_EXCEPTION;
             } else {
-              waiterFailure = Future.failedFuture(cause);
+              waiterFailure = cause;
             }
-            removed.context.emit(waiterFailure, waiter.handler);
+            waiter.handler.fail(waiterFailure);
           }
           removed.result.fail(cause);
         }
@@ -502,9 +499,9 @@ public class SimpleConnectionPool<C> implements ConnectionPool<C> {
   private static class Evict<C> implements Executor.Action<SimpleConnectionPool<C>> {
 
     private final Predicate<C> predicate;
-    private final Promise<List<C>> handler;
+    private final Completable<List<C>> handler;
 
-    public Evict(Predicate<C> predicate, Promise<List<C>> handler) {
+    public Evict(Predicate<C> predicate, Completable<List<C>> handler) {
       this.predicate = predicate;
       this.handler = handler;
     }
@@ -515,7 +512,7 @@ public class SimpleConnectionPool<C> implements ConnectionPool<C> {
         return new Task() {
           @Override
           public void run() {
-            handler.handle(POOL_CLOSED);
+            handler.fail(POOL_CLOSED_EXCEPTION);
           }
         };
       }
@@ -531,7 +528,7 @@ public class SimpleConnectionPool<C> implements ConnectionPool<C> {
       Task head = new Task() {
         @Override
         public void run() {
-          handler.handle(Future.succeededFuture(res));
+          handler.succeed(res);
         }
       };
       Task tail = head;
@@ -547,15 +544,13 @@ public class SimpleConnectionPool<C> implements ConnectionPool<C> {
   }
 
   @Override
-  public Future<List<C>> evict(Predicate<C> predicate) {
-    Promise<List<C>> promise = Promise.promise();
-    execute(new Evict<>(predicate, promise));
-    return promise.future();
+  public void evict(Predicate<C> predicate, Completable<List<C>> handler) {
+    execute(new Evict<>(predicate, handler));
   }
 
   private static class Acquire<C> extends PoolWaiter<C> implements Executor.Action<SimpleConnectionPool<C>> {
 
-    public Acquire(ContextInternal context, PoolWaiter.Listener<C> listener, int capacity, Promise<Lease<C>> handler) {
+    public Acquire(ContextInternal context, PoolWaiter.Listener<C> listener, int capacity, Completable<Lease<C>> handler) {
       super(listener, context, capacity, handler);
     }
 
@@ -641,33 +636,27 @@ public class SimpleConnectionPool<C> implements ConnectionPool<C> {
   }
 
   @Override
-  public Future<Lease<C>> acquire(ContextInternal context, int kind) {
-    LazyFuture<Lease<C>> fut = new LazyFuture<>();
-    execute(new Acquire<>(context, PoolWaiter.NULL_LISTENER, capacityFactors[kind], fut));
-    return fut;
+  public void acquire(ContextInternal context, int kind, Completable<Lease<C>> handler) {
+    execute(new Acquire<>(context, PoolWaiter.NULL_LISTENER, capacityFactors[kind], handler));
   }
 
   @Override
-  public Future<Lease<C>> acquire(ContextInternal context, PoolWaiter.Listener<C> listener, int kind) {
-    LazyFuture<Lease<C>> fut = new LazyFuture<>();
-    execute(new Acquire<>(context, listener, capacityFactors[kind], fut));
-    return fut;
+  public void acquire(ContextInternal context, PoolWaiter.Listener<C> listener, int kind, Completable<Lease<C>> handler) {
+    execute(new Acquire<>(context, listener, capacityFactors[kind], handler));
   }
 
   @Override
-  public Future<Boolean> cancel(PoolWaiter<C> waiter) {
-    Promise<Boolean> promise = Promise.promise();
-    execute(new Cancel<>(waiter, promise));
-    return promise.future();
+  public void cancel(PoolWaiter<C> waiter, Completable<Boolean> handler) {
+    execute(new Cancel<>(waiter, handler));
   }
 
   private static class Cancel<C> extends Task implements Executor.Action<SimpleConnectionPool<C>> {
 
     private final PoolWaiter<C> waiter;
-    private final Promise<Boolean> handler;
+    private final Completable<Boolean> handler;
     private boolean cancelled;
 
-    public Cancel(PoolWaiter<C> waiter, Promise<Boolean> handler) {
+    public Cancel(PoolWaiter<C> waiter, Completable<Boolean> handler) {
       this.waiter = waiter;
       this.handler = handler;
     }
@@ -678,7 +667,7 @@ public class SimpleConnectionPool<C> implements ConnectionPool<C> {
         return new Task() {
           @Override
           public void run() {
-            handler.handle(POOL_CLOSED);
+            handler.fail(POOL_CLOSED_EXCEPTION);
           }
         };
       }
@@ -696,18 +685,18 @@ public class SimpleConnectionPool<C> implements ConnectionPool<C> {
 
     @Override
     public void run() {
-      handler.handle(Future.succeededFuture(cancelled));
+      handler.succeed(cancelled);
     }
   }
 
   static class LeaseImpl<C> implements Lease<C> {
 
-    private final Handler<AsyncResult<Lease<C>>> handler;
+    private final Completable<Lease<C>> handler;
     private final Slot<C> slot;
     private final C connection;
     private boolean recycled;
 
-    public LeaseImpl(Slot<C> slot, Handler<AsyncResult<Lease<C>>> handler) {
+    public LeaseImpl(Slot<C> slot, Completable<Lease<C>> handler) {
       this.handler = handler;
       this.slot = slot;
       this.connection = slot.connection;
@@ -780,9 +769,9 @@ public class SimpleConnectionPool<C> implements ConnectionPool<C> {
 
   private static class Close<C> implements Executor.Action<SimpleConnectionPool<C>> {
 
-    private final Promise<List<Future<C>>> handler;
+    private final Completable<List<Future<C>>> handler;
 
-    private Close(Promise<List<Future<C>>> handler) {
+    private Close(Completable<List<Future<C>>> handler) {
       this.handler = handler;
     }
 
@@ -792,7 +781,7 @@ public class SimpleConnectionPool<C> implements ConnectionPool<C> {
         return new Task() {
           @Override
           public void run() {
-            handler.handle(POOL_CLOSED);
+            handler.fail(POOL_CLOSED_EXCEPTION);
           }
         };
       }
@@ -815,18 +804,18 @@ public class SimpleConnectionPool<C> implements ConnectionPool<C> {
       return new Task() {
         @Override
         public void run() {
-          waiters.forEach(w -> w.context.emit(POOL_CLOSED, w.handler));
-          handler.handle(Future.succeededFuture(list));
+          waiters.forEach(w -> {
+            w.handler.fail(POOL_CLOSED_EXCEPTION);
+          });
+          handler.succeed(list);
         }
       };
     }
   }
 
   @Override
-  public Future<List<Future<C>>> close() {
-    Promise<List<Future<C>>> promise = Promise.promise();
-    execute(new Close<>(promise));
-    return promise.future();
+  public void close(Completable<List<Future<C>>> handler) {
+    execute(new Close<>(handler));
   }
 
   private static class Waiters<C> implements Iterable<PoolWaiter<C>> {
@@ -932,17 +921,19 @@ public class SimpleConnectionPool<C> implements ConnectionPool<C> {
 
   static class LazyFuture<T> extends io.vertx.core.impl.future.FutureBase<T> implements Promise<T> {
 
-    private List<Listener<T>> handlers = new ArrayList<>();
+    private final List<Completable<? super T>> handlers = new ArrayList<>();
     private Future<T> fut = null;
 
     @Override
     public boolean tryComplete(T result) {
-      throw new UnsupportedOperationException();
+      handle(Future.succeededFuture(result));
+      return true;
     }
 
     @Override
     public boolean tryFail(Throwable cause) {
-      throw new UnsupportedOperationException();
+      handle(Future.failedFuture(cause));
+      return true;
     }
 
     @Override
@@ -953,17 +944,13 @@ public class SimpleConnectionPool<C> implements ConnectionPool<C> {
     @Override
     public void handle(AsyncResult<T> event) {
       Future<T> f = (Future<T>) event;
-      List<Listener<T>> h;
+      List<Completable<? super T>> h;
       synchronized (this) {
         fut = f;
         h = handlers;
       }
-      for (Listener<T> t : h) {
-        if (event.succeeded()) {
-          t.onSuccess(event.result());
-        } else {
-          t.onFailure(event.cause());
-        }
+      for (Completable<? super T> t : h) {
+        t.complete(event.result(), event.cause());
       }
     }
 
@@ -973,13 +960,9 @@ public class SimpleConnectionPool<C> implements ConnectionPool<C> {
     }
     @Override
     public Future<T> onComplete(Handler<AsyncResult<T>> handler) {
-      addListener(new Listener<T>() {
+      addListener(new Completable<T>() {
         @Override
-        public void onSuccess(T value) {
-          handler.handle(LazyFuture.this);
-        }
-        @Override
-        public void onFailure(Throwable failure) {
+        public void complete(T result, Throwable failure) {
           handler.handle(LazyFuture.this);
         }
       });
@@ -1002,7 +985,7 @@ public class SimpleConnectionPool<C> implements ConnectionPool<C> {
       return fut != null && fut.failed();
     }
     @Override
-    public void addListener(Listener<T> listener) {
+    public void addListener(Completable<? super T> listener) {
       Future<T> f;
       synchronized (this) {
         f = fut;
@@ -1011,14 +994,10 @@ public class SimpleConnectionPool<C> implements ConnectionPool<C> {
           return;
         }
       }
-      if (f.succeeded()) {
-        listener.onSuccess(f.result());
-      } else {
-        listener.onFailure(f.cause());
-      }
+      listener.complete(f.result(), f.cause());
     }
     @Override
-    public void removeListener(Listener<T> listener) {
+    public void removeListener(Completable<? super T> listener) {
       synchronized (this) {
         handlers.remove(listener);
       }

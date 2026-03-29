@@ -10,11 +10,10 @@
  */
 package io.vertx.core.http.impl;
 
-import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.handler.codec.Headers;
 import io.vertx.core.Handler;
 import io.vertx.core.http.HttpConnection;
-import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.internal.ContextInternal;
 
 /**
@@ -22,13 +21,17 @@ import io.vertx.core.internal.ContextInternal;
  */
 public interface HttpServerConnection extends HttpConnection {
 
-  ContextInternal getContext();
+  HttpServerConnection streamHandler(Handler<HttpServerStream> handler);
 
-  Channel channel();
+  Headers<CharSequence, CharSequence, ?> newHeaders();
+
+  boolean supportsSendFile();
+
+  /**
+   * @return the connection context
+   */
+  ContextInternal context();
 
   ChannelHandlerContext channelHandlerContext();
 
-  HttpServerConnection handler(Handler<HttpServerRequest> handler);
-
-  HttpServerConnection invalidRequestHandler(Handler<HttpServerRequest> handler);
 }

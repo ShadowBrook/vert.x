@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2021 Contributors to the Eclipse Foundation
+ * Copyright (c) 2011-2025 Contributors to the Eclipse Foundation
  *
  * This program and the accompanying materials are made available under the
  * terms of the Eclipse Public License 2.0 which is available at
@@ -13,7 +13,6 @@ package io.vertx.core.file;
 
 import io.vertx.codegen.annotations.Fluent;
 import io.vertx.codegen.annotations.Nullable;
-import io.vertx.codegen.annotations.Unstable;
 import io.vertx.codegen.annotations.VertxGen;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
@@ -22,7 +21,6 @@ import io.vertx.core.buffer.Buffer;
 import io.vertx.core.streams.ReadStream;
 import io.vertx.core.streams.WriteStream;
 
-import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -56,6 +54,12 @@ public interface AsyncFile extends ReadStream<Buffer>, WriteStream<Buffer> {
   @Override
   AsyncFile drainHandler(Handler<Void> handler);
 
+  /**
+   * Set an exception handler on the read stream and on the write stream.
+   *
+   * @param handler the handler
+   * @return a reference to this, so the API can be used fluently
+   */
   @Override
   AsyncFile exceptionHandler(Handler<Throwable> handler);
 
@@ -174,7 +178,6 @@ public interface AsyncFile extends ReadStream<Buffer>, WriteStream<Buffer> {
    *
    * @return the lock if it can be acquired immediately, otherwise {@code null}
    */
-  @Unstable
   default @Nullable AsyncFileLock tryLock() {
     return tryLock(0, Long.MAX_VALUE, false);
   }
@@ -187,7 +190,6 @@ public interface AsyncFile extends ReadStream<Buffer>, WriteStream<Buffer> {
    * @param shared whether the lock should be shared
    * @return the lock if it can be acquired immediately, otherwise {@code null}
    */
-  @Unstable
   @Nullable AsyncFileLock tryLock(long position, long size, boolean shared);
 
   /**
@@ -195,7 +197,6 @@ public interface AsyncFile extends ReadStream<Buffer>, WriteStream<Buffer> {
    *
    * @return a future indicating the completion of this operation
    */
-  @Unstable
   default Future<AsyncFileLock> lock() {
     return lock(0, Long.MAX_VALUE, false);
   }
@@ -208,7 +209,6 @@ public interface AsyncFile extends ReadStream<Buffer>, WriteStream<Buffer> {
    * @param shared whether the lock should be shared
    * @return a future indicating the completion of this operation
    */
-  @Unstable
   Future<AsyncFileLock> lock(long position, long size, boolean shared);
 
   /**
@@ -222,7 +222,6 @@ public interface AsyncFile extends ReadStream<Buffer>, WriteStream<Buffer> {
    * @param block the code block called after lock acquisition
    * @return the future returned by the {@code block}
    */
-  @Unstable
   default <T> Future<T> withLock(Supplier<Future<T>> block) {
     return withLock(0, Long.MAX_VALUE, false, block);
   }
@@ -241,7 +240,6 @@ public interface AsyncFile extends ReadStream<Buffer>, WriteStream<Buffer> {
    * @param block the code block called after lock acquisition
    * @return the future returned by the {@code block}
    */
-  @Unstable
   default <T> Future<T> withLock(long position, long size, boolean shared, Supplier<Future<T>> block) {
     return lock(position, size, shared)
       .compose(lock -> {

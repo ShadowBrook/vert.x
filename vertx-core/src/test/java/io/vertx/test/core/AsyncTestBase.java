@@ -11,13 +11,10 @@
 
 package io.vertx.test.core;
 
-import io.vertx.core.AsyncResult;
-import io.vertx.core.Context;
-import io.vertx.core.Handler;
+import io.vertx.core.*;
 import io.vertx.core.Future;
-import io.vertx.core.Vertx;
-import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.impl.Utils;
+import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.internal.logging.Logger;
 import io.vertx.core.internal.logging.LoggerFactory;
 import org.hamcrest.Matcher;
@@ -51,7 +48,7 @@ public class AsyncTestBase {
   private boolean threadChecksEnabled = true;
   private volatile boolean tearingDown;
   private volatile Thread mainThread;
-  private volatile boolean lateFailure;
+  private volatile Throwable lateFailure;
   private Map<String, Exception> threadNames = new ConcurrentHashMap<>();
   @Rule
   public TestName name = new TestName();
@@ -66,7 +63,7 @@ public class AsyncTestBase {
     testCompleteCalled = false;
     awaitCalled = false;
     threadNames.clear();
-    lateFailure = false;
+    lateFailure = null;
   }
 
   protected void tearDown() throws Exception {
@@ -163,7 +160,9 @@ public class AsyncTestBase {
       // Throwable caught from non main thread
       throw new IllegalStateException("Assert or failure from non main thread but no await() on main thread", throwable);
     }
-    if (lateFailure) {
+    Throwable late = lateFailure;
+    if (late != null) {
+      late.printStackTrace(System.out);
       throw new IllegalStateException("Test reported a failure after completion");
     }
     for (Map.Entry<String, Exception> entry: threadNames.entrySet()) {
@@ -180,7 +179,7 @@ public class AsyncTestBase {
 
   private void handleThrowable(Throwable t) {
     if (Thread.currentThread() != mainThread && testCompleteCalled) {
-      lateFailure = true;
+      lateFailure = t;
       throw new IllegalStateException("assert or failure occurred after test has completed", t);
     }
     throwable = t;
@@ -506,6 +505,19 @@ public class AsyncTestBase {
     }
   }
 
+  protected void assertNotEquals(Object unexpected, Object actual) {
+    assertNotEquals(null, unexpected, actual);
+  }
+
+  protected void assertNotEquals(String message, Object unexpected, Object actual) {
+    checkThread();
+    try {
+      Assert.assertNotEquals(message, unexpected, actual);
+    } catch (AssertionError e) {
+      handleThrowable(e);
+    }
+  }
+
   protected <T> void assertThat(String reason, T actual, Matcher<T> matcher) {
     checkThread();
     try {
@@ -604,6 +616,13 @@ public class AsyncTestBase {
     };
   }
 
+  protected <T> Completable<T> onFailure2(Consumer<Throwable> consumer) {
+    return (res, err) -> {
+      assertNotNull(err);
+      consumer.accept(err);
+    };
+  }
+
   protected <T> T awaitFuture(Future<T> latch) throws InterruptedException {
     return awaitFuture(latch, 10, TimeUnit.SECONDS);
   }
@@ -675,6 +694,17 @@ public class AsyncTestBase {
         return false;
       }
     }
+  }
+
+  protected <T> Completable<T> onSuccess2(Consumer<T> consumer) {
+    return (res, err) -> {
+      if (err != null) {
+        err.printStackTrace();
+        fail(err.getMessage());
+      } else {
+        consumer.accept(res);
+      }
+    };
   }
 
   protected <T> Handler<AsyncResult<T>> onSuccess(Consumer<T> consumer) {

@@ -15,15 +15,16 @@ import io.vertx.core.Context;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.ThreadingModel;
+import io.vertx.core.internal.WorkerPool;
+import io.vertx.core.internal.deployment.DeploymentContext;
 import io.vertx.core.internal.CloseFuture;
 import io.vertx.core.internal.ContextInternal;
-import io.vertx.core.internal.VertxInternal;
+import io.vertx.core.internal.EventExecutor;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.spi.tracing.VertxTracer;
 
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.Executor;
 
 /**
  * A context that forwards most operations to a delegate. This context
@@ -49,13 +50,13 @@ final class DuplicatedContext extends ContextBase implements ContextInternal {
   }
 
   @Override
-  public boolean inThread() {
-    return delegate.inThread();
+  public CloseFuture closeFuture() {
+    return delegate.closeFuture();
   }
 
   @Override
-  public CloseFuture closeFuture() {
-    return delegate.closeFuture();
+  public Future<Void> close() {
+    return Future.succeededFuture();
   }
 
   @Override
@@ -75,7 +76,12 @@ final class DuplicatedContext extends ContextBase implements ContextInternal {
   }
 
   @Override
-  public Executor executor() {
+  public EventExecutor eventLoop() {
+    return delegate.eventLoop();
+  }
+
+  @Override
+  public EventExecutor executor() {
     return delegate.executor();
   }
 
@@ -90,12 +96,12 @@ final class DuplicatedContext extends ContextBase implements ContextInternal {
   }
 
   @Override
-  public Deployment getDeployment() {
-    return delegate.getDeployment();
+  public DeploymentContext deployment() {
+    return delegate.deployment();
   }
 
   @Override
-  public VertxInternal owner() {
+  public VertxImpl owner() {
     return delegate.owner();
   }
 
@@ -120,38 +126,8 @@ final class DuplicatedContext extends ContextBase implements ContextInternal {
   }
 
   @Override
-  public <T> Future<T> executeBlockingInternal(Callable<T> action) {
-    return ContextImpl.executeBlocking(this, action, delegate.internalWorkerPool, delegate.internalOrderedTasks);
-  }
-
-  @Override
-  public <T> Future<T> executeBlockingInternal(Callable<T> action, boolean ordered) {
-    return ContextImpl.executeBlocking(this, action, delegate.internalWorkerPool, ordered ? delegate.internalOrderedTasks : null);
-  }
-
-  @Override
   public <T> Future<T> executeBlocking(Callable<T> blockingCodeHandler, boolean ordered) {
-    return ContextImpl.executeBlocking(this, blockingCodeHandler, delegate.workerPool, ordered ? delegate.orderedTasks : null);
-  }
-
-  @Override
-  public <T> Future<T> executeBlocking(Callable<T> blockingCodeHandler, TaskQueue queue) {
-    return ContextImpl.executeBlocking(this, blockingCodeHandler, delegate.workerPool, queue);
-  }
-
-  @Override
-  public <T> void execute(T argument, Handler<T> task) {
-    delegate.execute(this, argument, task);
-  }
-
-  @Override
-  public <T> void emit(T argument, Handler<T> task) {
-    delegate.emit(this, argument, task);
-  }
-
-  @Override
-  public void execute(Runnable task) {
-    delegate.execute(this, task);
+    return ExecuteBlocking.executeBlocking(delegate.workerPool, this, blockingCodeHandler, ordered ? delegate.executeBlockingTasks : null);
   }
 
   @Override
@@ -165,8 +141,12 @@ final class DuplicatedContext extends ContextBase implements ContextInternal {
   }
 
   @Override
-  public ContextInternal duplicate() {
-    return new DuplicatedContext(delegate, locals.length == 0 ? VertxImpl.EMPTY_CONTEXT_LOCALS : new Object[locals.length]);
+  public ContextInternal duplicate(boolean copy) {
+    DuplicatedContext duplicate = new DuplicatedContext(delegate, locals.length == 0 ? VertxImpl.EMPTY_CONTEXT_LOCALS : new Object[locals.length]);
+    if (copy) {
+      delegate.owner().duplicate(this, duplicate);
+    }
+    return duplicate;
   }
 
   @Override

@@ -16,11 +16,7 @@ import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.internal.logging.Logger;
 import io.vertx.core.internal.logging.LoggerFactory;
-import io.vertx.core.net.NetClient;
-import io.vertx.core.net.NetClientOptions;
-import io.vertx.core.net.NetServer;
-import io.vertx.core.net.NetServerOptions;
-import io.vertx.core.net.NetSocket;
+import io.vertx.core.net.*;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -37,7 +33,7 @@ import java.util.concurrent.TimeUnit;
  *
  * @author <a href="http://oss.lehmann.cx/">Alexander Lehmann</a>
  */
-public class SocksProxy extends TestProxyBase<SocksProxy> {
+public class SocksProxy extends ProxyBase<SocksProxy> {
 
   private static final Logger log = LoggerFactory.getLogger(SocksProxy.class);
 
@@ -55,6 +51,7 @@ public class SocksProxy extends TestProxyBase<SocksProxy> {
   public static final int DEFAULT_PORT = 11080;
 
   private NetServer server;
+  private NetClient client;
 
   @Override
   public int defaultPort() {
@@ -69,9 +66,11 @@ public class SocksProxy extends TestProxyBase<SocksProxy> {
    */
   @Override
   public SocksProxy start(Vertx vertx) throws Exception {
-    NetServerOptions options = new NetServerOptions();
-    options.setHost("localhost").setPort(port);
-    server = vertx.createNetServer(options);
+    client = vertx.createNetClient();
+    server = vertx.createNetServer(new NetServerOptions()
+      .setHost("localhost")
+      .setPort(port)
+    );
     server.connectHandler(socket -> {
       socket.handler(buffer -> {
         String username = nextUserName();
@@ -119,8 +118,7 @@ public class SocksProxy extends TestProxyBase<SocksProxy> {
             port = Integer.valueOf(forceUri.substring(forceUri.indexOf(':') + 1));
           }
           log.debug("connecting to " + host + ":" + port);
-          NetClient netClient = vertx.createNetClient(new NetClientOptions());
-          netClient.connect(port, host).onComplete(result -> {
+          client.connect(port, host).onComplete(result -> {
             if (result.succeeded()) {
               localAddresses.add(result.result().localAddress().toString());
               log.debug("writing: " + toHex(connectResponse));
@@ -162,11 +160,19 @@ public class SocksProxy extends TestProxyBase<SocksProxy> {
             }
           });
           log.debug("writing: " + toHex(serverReplyAuth));
-          socket.write(serverReplyAuth);
+          if (successDelayMillis > 0) {
+            vertx.setTimer(successDelayMillis, tid -> socket.write(serverReplyAuth));
+          } else {
+            socket.write(serverReplyAuth);
+          }
         } else {
           socket.handler(handler);
           log.debug("writing: " + toHex(serverReply));
-          socket.write(serverReply);
+          if (successDelayMillis > 0) {
+            vertx.setTimer(successDelayMillis, tid -> socket.write(serverReply));
+          } else {
+            socket.write(serverReply);
+          }
         }
       });
     });
@@ -198,8 +204,12 @@ public class SocksProxy extends TestProxyBase<SocksProxy> {
    */
   @Override
   public void stop() {
+    if (client != null) {
+      client.close().await();
+      client = null;
+    }
     if (server != null) {
-      server.close();
+      server.close().await();
       server = null;
     }
   }

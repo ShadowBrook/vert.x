@@ -11,12 +11,14 @@
 
 package io.vertx.tests.eventbus;
 
+import io.vertx.core.Completable;
 import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 import io.vertx.core.shareddata.AsyncMap;
 import io.vertx.core.shareddata.Counter;
 import io.vertx.core.shareddata.Lock;
 import io.vertx.core.spi.cluster.*;
+import io.vertx.core.eventbus.impl.clustered.NodeSelector;
 
 import java.util.List;
 import java.util.Map;
@@ -24,18 +26,19 @@ import java.util.Map;
 public class WrappedClusterManager implements ClusterManager {
 
   private final ClusterManager delegate;
+  private NodeSelector nodeSelector;
 
   public WrappedClusterManager(ClusterManager delegate) {
     this.delegate = delegate;
   }
 
   @Override
-  public void init(Vertx vertx, NodeSelector nodeSelector) {
-    delegate.init(vertx, nodeSelector);
+  public void init(Vertx vertx) {
+    delegate.init(vertx);
   }
 
   @Override
-  public <K, V> void getAsyncMap(String name, Promise<AsyncMap<K, V>> promise) {
+  public <K, V> void getAsyncMap(String name, Completable<AsyncMap<K, V>> promise) {
     delegate.getAsyncMap(name, promise);
   }
 
@@ -45,12 +48,12 @@ public class WrappedClusterManager implements ClusterManager {
   }
 
   @Override
-  public void getLockWithTimeout(String name, long timeout, Promise<Lock> promise) {
+  public void getLockWithTimeout(String name, long timeout, Completable<Lock> promise) {
     delegate.getLockWithTimeout(name, timeout, promise);
   }
 
   @Override
-  public void getCounter(String name, Promise<Counter> promise) {
+  public void getCounter(String name, Completable<Counter> promise) {
     delegate.getCounter(name, promise);
   }
 
@@ -70,7 +73,7 @@ public class WrappedClusterManager implements ClusterManager {
   }
 
   @Override
-  public void setNodeInfo(NodeInfo nodeInfo, Promise<Void> promise) {
+  public void setNodeInfo(NodeInfo nodeInfo, Completable<Void> promise) {
     delegate.setNodeInfo(nodeInfo, promise);
   }
 
@@ -80,17 +83,17 @@ public class WrappedClusterManager implements ClusterManager {
   }
 
   @Override
-  public void getNodeInfo(String nodeId, Promise<NodeInfo> promise) {
+  public void getNodeInfo(String nodeId, Completable<NodeInfo> promise) {
     delegate.getNodeInfo(nodeId, promise);
   }
 
   @Override
-  public void join(Promise<Void> promise) {
+  public void join(Completable<Void> promise) {
     delegate.join(promise);
   }
 
   @Override
-  public void leave(Promise<Void> promise) {
+  public void leave(Completable<Void> promise) {
     delegate.leave(promise);
   }
 
@@ -100,17 +103,53 @@ public class WrappedClusterManager implements ClusterManager {
   }
 
   @Override
-  public void addRegistration(String address, RegistrationInfo registrationInfo, Promise<Void> promise) {
+  public final void registrationListener(RegistrationListener registrationListener) {
+    nodeSelector = (NodeSelector) registrationListener;
+    NodeSelector interceptor = new NodeSelector() {
+      @Override
+      public void init(ClusteredNode clusterManager) {
+        nodeSelector.init(clusterManager);
+      }
+      @Override
+      public void eventBusStarted() {
+        nodeSelector.eventBusStarted();
+      }
+      @Override
+      public void selectForSend(String address, Completable<String> promise) {
+        nodeSelector.selectForSend(address, promise);
+      }
+      @Override
+      public void selectForPublish(String address, Completable<Iterable<String>> promise) {
+        nodeSelector.selectForPublish(address, promise);
+      }
+      @Override
+      public void registrationsUpdated(RegistrationUpdateEvent event) {
+        WrappedClusterManager.this.registrationsUpdated(event);
+      }
+      @Override
+      public void registrationsLost() {
+        WrappedClusterManager.this.registrationsLost();
+      }
+      @Override
+      public boolean wantsUpdatesFor(String address) {
+        return WrappedClusterManager.this.wantsUpdatesFor(address);
+      }
+    };
+    delegate.registrationListener(interceptor);
+  }
+
+  @Override
+  public void addRegistration(String address, RegistrationInfo registrationInfo, Completable<Void> promise) {
     delegate.addRegistration(address, registrationInfo, promise);
   }
 
   @Override
-  public void removeRegistration(String address, RegistrationInfo registrationInfo, Promise<Void> promise) {
+  public void removeRegistration(String address, RegistrationInfo registrationInfo, Completable<Void> promise) {
     delegate.removeRegistration(address, registrationInfo, promise);
   }
 
   @Override
-  public void getRegistrations(String address, Promise<List<RegistrationInfo>> promise) {
+  public void getRegistrations(String address, Completable<List<RegistrationInfo>> promise) {
     delegate.getRegistrations(address, promise);
   }
 
@@ -126,5 +165,17 @@ public class WrappedClusterManager implements ClusterManager {
 
   public ClusterManager getDelegate() {
     return delegate;
+  }
+
+  public void registrationsUpdated(RegistrationUpdateEvent event) {
+    nodeSelector.registrationsUpdated(event);
+  }
+
+  public void registrationsLost() {
+    nodeSelector.registrationsLost();
+  }
+
+  public boolean wantsUpdatesFor(String address) {
+    return nodeSelector.wantsUpdatesFor(address);
   }
 }

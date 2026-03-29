@@ -18,7 +18,6 @@ import io.vertx.codegen.annotations.Nullable;
 import io.vertx.codegen.annotations.VertxGen;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
-import io.vertx.core.VertxException;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.streams.ReadStream;
 import io.vertx.core.streams.WriteStream;
@@ -26,7 +25,10 @@ import io.vertx.core.streams.WriteStream;
 import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLSession;
 import java.security.cert.Certificate;
+import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Represents a socket-like interface to a TCP connection on either the
@@ -42,7 +44,7 @@ import java.util.List;
  * @author <a href="http://tfox.org">Tim Fox</a>
  */
 @VertxGen
-public interface NetSocket extends ReadStream<Buffer>, WriteStream<Buffer> {
+public interface NetSocket extends StreamChannel {
 
   @Override
   NetSocket exceptionHandler(Handler<Throwable> handler);
@@ -198,33 +200,67 @@ public interface NetSocket extends ReadStream<Buffer>, WriteStream<Buffer> {
    * @return a reference to this, so the API can be used fluently
    */
   @Fluent
-  NetSocket shutdownHandler(@Nullable Handler<Void> handler);
+  NetSocket shutdownHandler(@Nullable Handler<Duration> handler);
 
   /**
-   * Upgrade channel to use SSL/TLS. Be aware that for this to work SSL must be configured.
-   *
-   * @return a future completed when the connection has been upgraded to SSL
+   * Like {@link #upgradeToSsl(SSLOptions, String, Buffer)} with the default SSL options, without indicating a server name,
+   * without an upgrade message.
    */
   default Future<Void> upgradeToSsl() {
-    return upgradeToSsl((String) null);
+    return upgradeToSsl(null, null, null);
   }
 
   /**
-   * Upgrade channel to use SSL/TLS. Be aware that for this to work SSL must be configured.
-   *
-   * @param serverName the server name
-   * @return a future completed when the connection has been upgraded to SSL
+   * Like {@link #upgradeToSsl(SSLOptions, String, Buffer)} with the default SSL options and without indicating a server name.
    */
-  Future<Void> upgradeToSsl(String serverName);
+  default Future<Void> upgradeToSsl(Buffer msg) {
+    return upgradeToSsl(null, null, msg);
+  }
 
   /**
-   * Upgrade channel to use SSL/TLS. Be aware that for this to work SSL must be configured.
+   * Like {@link #upgradeToSsl(SSLOptions, String, Buffer)} with the default SSL options and without an update message.
+   */
+  default Future<Void> upgradeToSsl(String serverName) {
+    return upgradeToSsl(null, serverName, null);
+  }
+
+  /**
+   * Like {@link #upgradeToSsl(SSLOptions, String, Buffer)} with the default SSL options.
+   */
+  default Future<Void> upgradeToSsl(String serverName, Buffer msg) {
+    return upgradeToSsl(null, serverName, msg);
+  }
+
+  /**
+   * Like {@link #upgradeToSsl(SSLOptions, String, Buffer)} without an upgrade message.
+   */
+  default Future<Void> upgradeToSsl(SSLOptions sslOptions, String serverName) {
+    return upgradeToSsl(sslOptions, serverName, null);
+  }
+
+  /**
+   * Like {@link #upgradeToSsl(SSLOptions, String, Buffer)} without indicating a server name
+   */
+  default Future<Void> upgradeToSsl(SSLOptions sslOptions, Buffer msg) {
+    return upgradeToSsl(sslOptions, null, msg);
+  }
+
+  /**
+   * <p>Upgrade the channel to use SSL/TLS, in other words proceeds to the TLS handshake.</p>
+   *
+   * <p>The {@code upgrade} message will be sent after the socket is ready to proceed to the TLS handshake in
+   * order to avoid data races. In practice is usually send by a server when it sends a message to the client
+   * to proceed to the handshake, e.g. {@code 250 STARTTLS} for an SMTP server, it should
+   * be {@code null} on a client</p>
+   *
+   * <p>The server name is sent in the client handshake, it should be {@code null} on a server.</p>
    *
    * @param sslOptions the SSL options
    * @param serverName the server name
+   * @param upgrade the upgrade message to send
    * @return a future completed when the connection has been upgraded to SSL
    */
-  Future<Void> upgradeToSsl(SSLOptions sslOptions, String serverName);
+  Future<Void> upgradeToSsl(SSLOptions sslOptions, String serverName, Buffer upgrade);
 
   /**
    * Upgrade channel to use SSL/TLS. Be aware that for this to work SSL must be configured.
@@ -233,7 +269,7 @@ public interface NetSocket extends ReadStream<Buffer>, WriteStream<Buffer> {
    * @return a future completed when the connection has been upgraded to SSL
    */
   default Future<Void> upgradeToSsl(SSLOptions sslOptions) {
-    return upgradeToSsl(sslOptions, null);
+    return upgradeToSsl(sslOptions, null, null);
   }
 
   /**
@@ -257,7 +293,14 @@ public interface NetSocket extends ReadStream<Buffer>, WriteStream<Buffer> {
    * @see #sslSession()
    */
   @GenIgnore()
-  List<Certificate> peerCertificates() throws SSLPeerUnverifiedException;
+  default List<Certificate> peerCertificates() throws SSLPeerUnverifiedException {
+    SSLSession session = sslSession();
+    if (session != null) {
+      return Arrays.asList(session.getPeerCertificates());
+    } else {
+      return null;
+    }
+  }
 
   /**
    * Returns the SNI server name presented during the SSL handshake by the client.
@@ -270,6 +313,14 @@ public interface NetSocket extends ReadStream<Buffer>, WriteStream<Buffer> {
    * @return the application-level protocol negotiated during the TLS handshake
    */
   String applicationLayerProtocol();
+
+  /**
+   * @return the type-length-values present in the TCP header as a list of map entries
+   * where the key contains the TLV type and the value contains the TLV value.
+   * This is mainly used for HA Proxy Protocol v2
+   */
+  @GenIgnore()
+  List<Map.Entry<Buffer, Buffer>> proxyProtocolV2HeaderTLVs();
 
 }
 

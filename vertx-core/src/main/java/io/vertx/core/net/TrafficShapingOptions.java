@@ -16,14 +16,12 @@ import java.util.concurrent.TimeUnit;
 
 import io.netty.util.internal.ObjectUtil;
 import io.vertx.codegen.annotations.DataObject;
-import io.vertx.codegen.annotations.Unstable;
 import io.vertx.codegen.json.annotations.JsonGen;
 import io.vertx.core.json.JsonObject;
 
 /**
  * Options describing how {@link io.netty.handler.traffic.GlobalTrafficShapingHandler} will handle traffic shaping.
  */
-@Unstable
 @DataObject
 @JsonGen(publicConverter = false)
 public class TrafficShapingOptions {
@@ -222,4 +220,28 @@ public class TrafficShapingOptions {
   public TimeUnit getCheckIntervalForStatsTimeUnit() {
     return checkIntervalForStatsTimeUnit;
   }
+
+  @Override
+  public boolean equals(Object obj) {
+    TrafficShapingOptions that = (TrafficShapingOptions) obj;
+    return inboundGlobalBandwidth == that.inboundGlobalBandwidth &&
+           outboundGlobalBandwidth == that.outboundGlobalBandwidth &&
+           peakOutboundGlobalBandwidth == that.peakOutboundGlobalBandwidth &&
+           maxDelayToWait == that.maxDelayToWait &&
+           maxDelayToWaitTimeUnit == that.maxDelayToWaitTimeUnit &&
+           checkIntervalForStats == that.checkIntervalForStats &&
+           checkIntervalForStatsTimeUnit == that.checkIntervalForStatsTimeUnit;
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(inboundGlobalBandwidth,
+                        outboundGlobalBandwidth,
+                        peakOutboundGlobalBandwidth,
+                        maxDelayToWait,
+                        maxDelayToWaitTimeUnit,
+                        checkIntervalForStats,
+                        checkIntervalForStatsTimeUnit);
+  }
+
 }

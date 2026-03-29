@@ -11,78 +11,40 @@
 
 package io.vertx.core.http.impl;
 
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.buffer.Buffer;
-import io.vertx.core.internal.buffer.BufferInternal;
 import io.vertx.core.http.*;
-import io.vertx.core.internal.ContextInternal;
-import io.vertx.core.streams.WriteStream;
 
 /**
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
-public interface HttpClientStream extends WriteStream<Buffer> {
-
-  /**
-   * @return the stream id, {@code 1} denotes the first stream, HTTP/1 is a simple sequence, HTTP/2
-   * is the actual stream identifier.
-   */
-  int id();
-
-  Object metric();
+public interface HttpClientStream extends HttpStream {
 
   Object trace();
 
-  /**
-   * @return the stream version or null if it's not yet determined
-   */
-  HttpVersion version();
+  HttpClientConnection connection();
 
-  HttpClientConnectionInternal connection();
-  ContextInternal getContext();
+  Future<Void> writeHead(HttpRequestHead request, boolean chunked, Buffer buf, boolean end, StreamPriority priority, boolean connect);
 
-  Future<Void> writeHead(HttpRequestHead request, boolean chunked, ByteBuf buf, boolean end, StreamPriority priority, boolean connect);
-  Future<Void> writeBuffer(ByteBuf buf, boolean end);
-  Future<Void> writeFrame(int type, int flags, ByteBuf payload);
+  HttpClientStream headHandler(Handler<HttpResponseHead> handler);
+  HttpClientStream resetHandler(Handler<Long> handler);
+  HttpClientStream exceptionHandler(Handler<Throwable> handler);
+  HttpClientStream continueHandler(Handler<Void> handler);
+  HttpClientStream earlyHintsHandler(Handler<MultiMap> handler);
+  HttpClientStream pushHandler(Handler<HttpClientPush> handler);
+  HttpClientStream customFrameHandler(Handler<HttpFrame> handler);
+  HttpClientStream dataHandler(Handler<Buffer> handler);
+  HttpClientStream trailersHandler(Handler<MultiMap> handler);
+  HttpClientStream priorityChangeHandler(Handler<StreamPriority> handler);
+  HttpClientStream closeHandler(Handler<Void> handler);
+  HttpClientStream drainHandler(Handler<Void> handler);
 
-  void continueHandler(Handler<Void> handler);
-  void earlyHintsHandler(Handler<MultiMap> handler);
-  void pushHandler(Handler<HttpClientPush> handler);
-  void unknownFrameHandler(Handler<HttpFrame> handler);
+  HttpClientStream setWriteQueueMaxSize(int maxSize);
+  HttpClientStream pause();
+  HttpClientStream fetch(long amount);
 
-  @Override
-  default Future<Void> write(Buffer data) {
-    return writeBuffer(((BufferInternal)data).getByteBuf(), false);
-  }
-
-  @Override
-  default Future<Void> end(Buffer data) {
-    return writeBuffer(((BufferInternal)data).getByteBuf(), true);
-  }
-
-  @Override
-  default Future<Void> end() {
-    return writeBuffer(Unpooled.EMPTY_BUFFER, true);
-  }
-
-  void headHandler(Handler<HttpResponseHead> handler);
-  void chunkHandler(Handler<Buffer> handler);
-  void endHandler(Handler<MultiMap> handler);
-  void priorityHandler(Handler<StreamPriority> handler);
-  void closeHandler(Handler<Void> handler);
-
-  void doSetWriteQueueMaxSize(int size);
-  boolean isNotWritable();
-  void doPause();
-  void doFetch(long amount);
-
-  void reset(Throwable cause);
-
-  StreamPriority priority();
-  void updatePriority(StreamPriority streamPriority);
+  HttpClientStream updatePriority(StreamPriority streamPriority);
 
 }

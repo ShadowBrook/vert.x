@@ -15,11 +15,7 @@ import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.internal.logging.Logger;
 import io.vertx.core.internal.logging.LoggerFactory;
-import io.vertx.core.net.NetClient;
-import io.vertx.core.net.NetClientOptions;
-import io.vertx.core.net.NetServer;
-import io.vertx.core.net.NetServerOptions;
-import io.vertx.core.net.NetSocket;
+import io.vertx.core.net.*;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -36,7 +32,7 @@ import java.util.concurrent.TimeUnit;
  *
  * @author <a href="http://oss.lehmann.cx/">Alexander Lehmann</a>
  */
-public class Socks4Proxy extends TestProxyBase<Socks4Proxy> {
+public class Socks4Proxy extends ProxyBase<Socks4Proxy> {
 
   private static final Logger log = LoggerFactory.getLogger(Socks4Proxy.class);
 
@@ -47,6 +43,7 @@ public class Socks4Proxy extends TestProxyBase<Socks4Proxy> {
   public static final int DEFAULT_PORT = 11080;
 
   private NetServer server;
+  private NetClient client;
 
   @Override
   public int defaultPort() {
@@ -63,6 +60,7 @@ public class Socks4Proxy extends TestProxyBase<Socks4Proxy> {
   public Socks4Proxy start(Vertx vertx) throws Exception {
     NetServerOptions options = new NetServerOptions();
     options.setHost("localhost").setPort(port);
+    client = vertx.createNetClient(new NetClientOptions());
     server = vertx.createNetServer(options);
     server.connectHandler(socket -> {
       socket.handler(buffer -> {
@@ -98,12 +96,15 @@ public class Socks4Proxy extends TestProxyBase<Socks4Proxy> {
             port = Integer.valueOf(forceUri.substring(forceUri.indexOf(':') + 1));
           }
           log.debug("connecting to " + host + ":" + port);
-          NetClient netClient = vertx.createNetClient(new NetClientOptions());
-          netClient.connect(port, host).onComplete(result -> {
+          client.connect(port, host).onComplete(result -> {
             if (result.succeeded()) {
               localAddresses.add(result.result().localAddress().toString());
               log.debug("writing: " + toHex(connectResponse));
-              socket.write(connectResponse);
+              if (successDelayMillis > 0) {
+                vertx.setTimer(successDelayMillis, tid -> socket.write(connectResponse));
+              } else {
+                socket.write(connectResponse);
+              }
               log.debug("connected, starting pump");
               NetSocket clientSocket = result.result();
               socket.closeHandler(v -> clientSocket.close());
@@ -159,8 +160,12 @@ public class Socks4Proxy extends TestProxyBase<Socks4Proxy> {
   @Override
   public void stop() {
     if (server != null) {
-      server.close();
+      server.close().await();
       server = null;
+    }
+    if (client != null) {
+      client.close().await();
+      client = null;
     }
   }
 }

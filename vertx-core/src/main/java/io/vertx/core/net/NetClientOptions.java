@@ -82,6 +82,7 @@ public class NetClientOptions extends ClientOptionsBase {
    */
   public NetClientOptions(ClientOptionsBase other) {
     super(other);
+    init();
   }
 
   /**
@@ -237,6 +238,11 @@ public class NetClientOptions extends ClientOptionsBase {
   @Override
   public NetClientOptions setTcpQuickAck(boolean tcpQuickAck) {
     return (NetClientOptions) super.setTcpQuickAck(tcpQuickAck);
+  }
+
+  @Override
+  public NetClientOptions setTcpUserTimeout(int tcpUserTimeout) {
+    return (NetClientOptions) super.setTcpUserTimeout(tcpUserTimeout);
   }
 
   @Override

@@ -16,10 +16,7 @@ import io.vertx.core.json.JsonObject;
 import io.vertx.core.shareddata.Shareable;
 
 import java.time.Instant;
-import java.util.Base64;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
@@ -112,5 +109,82 @@ public final class JsonUtil {
   public static <T> Stream<T> asStream(Iterator<T> sourceIterator) {
     Iterable<T> iterable = () -> sourceIterator;
     return StreamSupport.stream(iterable.spliterator(), false);
+  }
+
+  public static int hashCode(Object value) {
+    if (value == null) {
+      return 0;
+    } else if (value instanceof Number) {
+      return Double.hashCode(((Number) value).doubleValue());
+    } else {
+      return value.hashCode();
+    }
+  }
+
+  /**
+   * Compares two objects to check if they are equal. This method handled the equality comparison
+   * in the following order.
+   *
+   * <ol>
+   *   <li>Check if both the objects are numbers. If both the objects are numbers, then the
+   *   equality of numbers will be checked.</li>
+   *   <li>If both the numbers are of different types, both the objects will be cast to the
+   *   class {@code Numbers}, and then both the numbers are compared for equality.</li>
+   *   <li>If both the objects are of a {@code CharSequence} type, then both the objects
+   *   will be converted to strings to check for the equality of the string representation
+   *   of the objects.</li>
+   *   <li>Finally, if none of the objects are equal, then the objets are compared to each
+   *   other for equality. In this case, it is the responsibility of the developer to define
+   *   the {@code equals(Object o1, Object o2)} for the class they define.</li>
+   * </ol>
+   *
+   * @param o1 The first object that will be compared.
+   * @param o2 The second object that will be compared.
+   * @return True, if the two objects are equal, false otherwise.
+   */
+  public static boolean compare(Object o1, Object o2) {
+    if (o1 instanceof Number && o2 instanceof Number) {
+      if (o1.getClass() == o2.getClass()) {
+        return o1.equals(o2);
+      } else {
+        // meaning that the numbers are different types
+        Number n1 = (Number) o1;
+        Number n2 = (Number) o2;
+        return compareNumbers(n1, n2);
+      }
+    } else if (o1 instanceof CharSequence && o2 instanceof CharSequence && o1.getClass() != o2.getClass()) {
+      return Objects.equals(o1.toString(), o2.toString());
+    } else {
+      return Objects.equals(o1, o2);
+    }
+  }
+
+  private static boolean compareNumbers(Number n1, Number n2) {
+    if (isDecimalNumber(n1) && isDecimalNumber(n2)) {
+      // compare as floating point double
+      return n1.doubleValue() == n2.doubleValue();
+    } else if (isWholeNumber(n1) && isWholeNumber(n2)) {
+      // compare as integer long
+      return n1.longValue() == n2.longValue();
+    } else if (isWholeNumber(n1) && isDecimalNumber(n2) ||
+      isDecimalNumber(n1) && isWholeNumber(n2)) {
+      // if its either integer or long and the other is float or double or vice versa,
+      // compare as floating point double
+      return n1.doubleValue() == n2.doubleValue();
+    } else {
+      if (isWholeNumber(n1)) {
+        return n1.longValue() == n2.longValue();
+      } else  {
+        return n1.doubleValue() == n2.doubleValue();
+      }
+    }
+  }
+
+  private static boolean isWholeNumber(Number thisValue) {
+    return thisValue instanceof Integer || thisValue instanceof Long;
+  }
+
+  private static boolean isDecimalNumber(Number thisValue) {
+    return thisValue instanceof Float || thisValue instanceof Double;
   }
 }

@@ -18,6 +18,7 @@ import org.junit.Test;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 import static io.vertx.core.net.endpoint.LoadBalancer.*;
 import static org.junit.Assert.assertEquals;
@@ -25,9 +26,9 @@ import static org.junit.Assert.assertTrue;
 
 public class LoadBalancingTest {
 
-  EndpointNode endpointOf(LoadBalancer loadBalancer) {
+  ServerEndpoint endpointOf(LoadBalancer loadBalancer) {
     InteractionMetrics<?> metrics = loadBalancer.newMetrics();
-    return new EndpointNode() {
+    return new ServerEndpoint() {
       @Override
       public SocketAddress address() {
         return null;
@@ -35,6 +36,10 @@ public class LoadBalancingTest {
       @Override
       public String key() {
         return "";
+      }
+      @Override
+      public String protocolId() {
+        return null;
       }
       @Override
       public Object unwrap() {
@@ -45,7 +50,7 @@ public class LoadBalancingTest {
         return metrics;
       }
       @Override
-      public EndpointInteraction newInteraction() {
+      public ServerInteraction newInteraction() {
         return null;
       }
     };
@@ -53,11 +58,11 @@ public class LoadBalancingTest {
 
   @Test
   public void testRoundRobin() throws Exception {
-    EndpointNode e1 = endpointOf(ROUND_ROBIN);
-    EndpointNode e2 = endpointOf(ROUND_ROBIN);
-    EndpointNode e3 = endpointOf(ROUND_ROBIN);
-    List<EndpointNode> metrics = Arrays.asList(e1, e2, e3);
-    EndpointSelector selector = ROUND_ROBIN.selector(metrics);
+    ServerEndpoint e1 = endpointOf(ROUND_ROBIN);
+    ServerEndpoint e2 = endpointOf(ROUND_ROBIN);
+    ServerEndpoint e3 = endpointOf(ROUND_ROBIN);
+    List<ServerEndpoint> metrics = Arrays.asList(e1, e2, e3);
+    ServerSelector selector = ROUND_ROBIN.selector(metrics);
     assertEquals(0, selector.select());
     assertEquals(1, selector.select());
     assertEquals(2, selector.select());
@@ -68,7 +73,7 @@ public class LoadBalancingTest {
 
   @Test
   public void testLeastRequests() throws Exception {
-    List<EndpointNode> metrics = new ArrayList<>();
+    List<ServerEndpoint> metrics = new ArrayList<>();
     int num = 6;
     for (int i = 0;i < num;i++) {
       metrics.add(endpointOf(LEAST_REQUESTS));
@@ -78,18 +83,18 @@ public class LoadBalancingTest {
         metrics.get(i).metrics().initiateRequest();
       }
     }
-    EndpointSelector selector = LoadBalancer.LEAST_REQUESTS.selector(metrics);
+    ServerSelector selector = LoadBalancer.LEAST_REQUESTS.selector(metrics);
     assertEquals(2, selector.select());
   }
 
   @Test
   public void testRandom() throws Exception {
-    List<EndpointNode> metrics = new ArrayList<>();
+    List<ServerEndpoint> metrics = new ArrayList<>();
     int num = 6;
     for (int i = 0;i < num;i++) {
       metrics.add(endpointOf(RANDOM));
     }
-    EndpointSelector selector = LoadBalancer.RANDOM.selector(metrics);
+    ServerSelector selector = LoadBalancer.RANDOM.selector(metrics);
     for (int i = 0; i < 1000; i++) {
       int selectedIndex = selector.select();
       assertTrue(selectedIndex >= 0 && selectedIndex < metrics.size());
@@ -99,20 +104,20 @@ public class LoadBalancingTest {
   @Test
   public void testPowerOfTwoChoices() throws Exception {
     for (int i = 0; i < 1000; i++) {
-      EndpointNode e1 = endpointOf(POWER_OF_TWO_CHOICES);
-      EndpointNode e2 = endpointOf(POWER_OF_TWO_CHOICES);
-      List<EndpointNode> metrics = Arrays.asList(e1, e2);
+      ServerEndpoint e1 = endpointOf(POWER_OF_TWO_CHOICES);
+      ServerEndpoint e2 = endpointOf(POWER_OF_TWO_CHOICES);
+      List<ServerEndpoint> metrics = Arrays.asList(e1, e2);
       e2.metrics().initiateRequest();
-      EndpointSelector selector = LoadBalancer.POWER_OF_TWO_CHOICES.selector(metrics);
+      ServerSelector selector = LoadBalancer.POWER_OF_TWO_CHOICES.selector(metrics);
       assertEquals(0, selector.select());
     }
 
-    List<EndpointNode> metrics = new ArrayList<>();
+    List<ServerEndpoint> metrics = new ArrayList<>();
     int num = 6;
     for (int i = 0;i < num;i++) {
       metrics.add(endpointOf(POWER_OF_TWO_CHOICES));
     }
-    EndpointSelector selector = LoadBalancer.POWER_OF_TWO_CHOICES.selector(metrics);
+    ServerSelector selector = LoadBalancer.POWER_OF_TWO_CHOICES.selector(metrics);
     for (int i = 0; i < 1000; i++) {
       int selectedIndex = selector.select();
       assertTrue(selectedIndex >= 0 && selectedIndex < metrics.size());
@@ -121,10 +126,10 @@ public class LoadBalancingTest {
 
   @Test
   public void testConsistentHashing() {
-    EndpointNode e1 = endpointOf(CONSISTENT_HASHING);
-    EndpointNode e2 = endpointOf(CONSISTENT_HASHING);
-    EndpointNode e3 = endpointOf(CONSISTENT_HASHING);
-    EndpointSelector selector = LoadBalancer.CONSISTENT_HASHING.selector(Arrays.asList(e1, e2, e3));
+    ServerEndpoint e1 = endpointOf(CONSISTENT_HASHING);
+    ServerEndpoint e2 = endpointOf(CONSISTENT_HASHING);
+    ServerEndpoint e3 = endpointOf(CONSISTENT_HASHING);
+    ServerSelector selector = LoadBalancer.CONSISTENT_HASHING.selector(Arrays.asList(e1, e2, e3));
     int num = 100;
     List<String> ids = new ArrayList<>(num);
     for (int i = 0;i < num;i++) {

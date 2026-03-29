@@ -10,11 +10,11 @@
  */
 package io.vertx.core.internal.concurrent;
 
-import io.netty.channel.EventLoop;
-import io.vertx.core.ThreadingModel;
-import io.vertx.core.internal.ContextInternal;
-import io.vertx.core.streams.impl.InboundReadQueue;
+import io.vertx.core.impl.EventLoopExecutor;
+import io.vertx.core.internal.EventExecutor;
+import io.vertx.core.streams.impl.MessagePassingQueue;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 import java.util.function.Predicate;
 
@@ -25,73 +25,67 @@ public class InboundMessageQueue<M> implements Predicate<M>, Runnable {
 
   private static final AtomicLongFieldUpdater<InboundMessageQueue<?>> DEMAND_UPDATER = (AtomicLongFieldUpdater<InboundMessageQueue<?>>) (AtomicLongFieldUpdater)AtomicLongFieldUpdater.newUpdater(InboundMessageQueue.class, "demand");
 
-  private final ContextInternal context;
-  private final EventLoop eventLoop;
-  private final InboundReadQueue<M> readQueue;
+  private final EventExecutor consumer;
+  private final EventExecutor producer;
+  private final MessagePassingQueue<M> mqp;
 
-  // Accessed by context thread
-  private boolean needsDrain;
+  // Accessed by produced thread
+  private boolean producerClosed;
+
+  // Accessed by consumer thread
   private boolean draining;
+  private boolean needsDrain;
+  private boolean consumerClosed;
 
   // Any thread
   private volatile long demand = Long.MAX_VALUE;
 
-  public InboundMessageQueue(EventLoop eventLoop, ContextInternal context) {
-    InboundReadQueue.Factory readQueueFactory;
-    if (context.threadingModel() == ThreadingModel.EVENT_LOOP && context.nettyEventLoop() == eventLoop) {
-      readQueueFactory = InboundReadQueue.SINGLE_THREADED;
+  public InboundMessageQueue(EventExecutor producer, EventExecutor consumer) {
+    MessagePassingQueue.Factory messageQueueFactory;
+    if (consumer instanceof EventLoopExecutor && producer instanceof EventLoopExecutor && ((EventLoopExecutor)consumer).eventLoop() == ((EventLoopExecutor)producer).eventLoop()) {
+      messageQueueFactory = MessagePassingQueue.SINGLE_THREAD;
     } else {
-      readQueueFactory = InboundReadQueue.SPSC;
+      messageQueueFactory = MessagePassingQueue.SPSC;
     }
-    this.readQueue = readQueueFactory.create(this);
-    this.context = context;
-    this.eventLoop = eventLoop;
+    this.mqp = messageQueueFactory.create(this);
+    this.consumer = consumer;
+    this.producer = producer;
   }
 
-  public InboundMessageQueue(EventLoop eventLoop, ContextInternal context, int lowWaterMark, int highWaterMark) {
-    InboundReadQueue.Factory readQueueFactory;
-    if (context.threadingModel() == ThreadingModel.EVENT_LOOP && context.nettyEventLoop() == eventLoop) {
-      readQueueFactory = InboundReadQueue.SINGLE_THREADED;
+  public InboundMessageQueue(EventExecutor producer, EventExecutor consumer, MessagePassingQueue.Factory factory) {
+    this.mqp = factory.create(this);
+    this.consumer = consumer;
+    this.producer = producer;
+  }
+
+  public InboundMessageQueue(EventExecutor producer, EventExecutor consumer, int lowWaterMark, int highWaterMark) {
+    MessagePassingQueue.Factory factory;
+    if (consumer instanceof EventLoopExecutor && producer instanceof EventLoopExecutor && ((EventLoopExecutor)consumer).eventLoop() == ((EventLoopExecutor)producer).eventLoop()) {
+      factory = MessagePassingQueue.SINGLE_THREAD;
     } else {
-      readQueueFactory = InboundReadQueue.SPSC;
+      factory = MessagePassingQueue.SPSC;
     }
-    this.readQueue = readQueueFactory.create(this, lowWaterMark, highWaterMark);
-    this.context = context;
-    this.eventLoop = eventLoop;
+    this.mqp = factory.create(this, lowWaterMark, highWaterMark);
+    this.consumer = consumer;
+    this.producer = producer;
   }
 
   @Override
   public final boolean test(M msg) {
-    while (true) {
-      long d = DEMAND_UPDATER.get(this);
-      if (d == 0L) {
-        return false;
-      } else if (d == Long.MAX_VALUE || DEMAND_UPDATER.compareAndSet(this, d, d - 1)) {
-        break;
+    if (consumerClosed) {
+      return false;
+    } else {
+      while (true) {
+        long d = DEMAND_UPDATER.get(this);
+        if (d == 0L) {
+          return false;
+        } else if (d == Long.MAX_VALUE || DEMAND_UPDATER.compareAndSet(this, d, d - 1)) {
+          break;
+        }
       }
+      handleMessage(msg);
+      return true;
     }
-    handleMessage(msg);
-    return true;
-  }
-
-  /**
-   * Handle resume, executed on the event-loop thread.
-   */
-  protected void handleResume() {
-  }
-
-  /**
-   * Handler pause, executed on the event-loop thread
-   */
-  protected void handlePause() {
-  }
-
-  /**
-   * Handle a message, executed on the context thread
-   *
-   * @param msg the message
-   */
-  protected void handleMessage(M msg) {
   }
 
   /**
@@ -101,12 +95,16 @@ public class InboundMessageQueue<M> implements Predicate<M>, Runnable {
    * @return {@code true} when a {@link #drain()} should be called.
    */
   public final boolean add(M msg) {
-    assert eventLoop.inEventLoop();
-    int res = readQueue.add(msg);
-    if ((res & InboundReadQueue.QUEUE_UNWRITABLE_MASK) != 0) {
+    assert producer.inThread();
+    if (producerClosed) {
+      handleDispose(msg);
+      return false;
+    }
+    int res = mqp.add(msg);
+    if ((res & MessagePassingQueue.UNWRITABLE_MASK) != 0) {
       handlePause();
     }
-    return (res & InboundReadQueue.DRAIN_REQUIRED_MASK) != 0;
+    return (res & MessagePassingQueue.DRAIN_REQUIRED_MASK) != 0;
   }
 
   /**
@@ -136,35 +134,49 @@ public class InboundMessageQueue<M> implements Predicate<M>, Runnable {
   }
 
   /**
-   * Schedule a drain operation on the context thread.
+   * Schedule a drain operation on the consumer thread, this method assumes a consumer thread.
    */
   public final void drain() {
-    assert eventLoop.inEventLoop();
-    if (context.inThread()) {
+    assert producer.inThread();
+    if (producerClosed) {
+      return;
+    }
+    if (consumer.inThread()) {
       drainInternal();
     } else {
-      context.execute(this::drainInternal);
+      consumer.execute(this::drainInternal);
     }
   }
 
   /**
-   * Task executed from context thread.
+   * Task executed from context thread, this should not be called directly.
    */
   @Override
   public void run() {
-    assert context.inThread();
+    assert consumer.inThread();
     if (!draining && needsDrain) {
       drainInternal();
     }
   }
 
   private void drainInternal() {
+    if (consumerClosed) {
+      return;
+    }
     draining = true;
     try {
-      int res = readQueue.drain();
-      needsDrain = (res & InboundReadQueue.DRAIN_REQUIRED_MASK) != 0;
-      if ((res & InboundReadQueue.QUEUE_WRITABLE_MASK) != 0) {
-        eventLoop.execute(this::handleResume);
+      int res = mqp.drain();
+      if (consumerClosed) {
+        releaseMessages();
+      } else {
+        needsDrain = (res & MessagePassingQueue.DRAIN_REQUIRED_MASK) != 0;
+        if ((res & MessagePassingQueue.WRITABLE_MASK) != 0) {
+          if (producer.inThread()) {
+            handleResume();
+          } else {
+            producer.execute(this::handleResume);
+          }
+        }
       }
     } finally {
       draining = false;
@@ -198,9 +210,85 @@ public class InboundMessageQueue<M> implements Predicate<M>, Runnable {
           break;
         }
       }
-      context
-        .executor()
-        .execute(this);
+      consumer.execute(this);
     }
+  }
+
+  /**
+   * Close the queue.
+   */
+  public final void close() {
+    if (!producer.inThread()) {
+      producer.execute(this::close);
+      return;
+    }
+    closeProducer();
+    if (consumer.inThread()) {
+      closeConsumer();
+    } else {
+      consumer.execute(this::closeConsumer);
+    }
+  }
+
+  /**
+   * Close the producer side, this must be called from the producer thread
+   */
+  public final void closeProducer() {
+    assert producer.inThread();
+    if (producerClosed) {
+      return;
+    }
+    producerClosed = true;
+  }
+
+  /**
+   * Close the consumer side, this must be called from the consumer thread
+   */
+  public final void closeConsumer() {
+    assert consumer.inThread();
+    if (consumerClosed) {
+      return;
+    }
+    consumerClosed = true;
+    if (!draining) {
+      releaseMessages();
+    }
+  }
+
+  private void releaseMessages() {
+    List<M> messages = mqp.clear();
+    for (M elt : messages) {
+      handleDispose(elt);
+    }
+  }
+
+  /**
+   * Handle resume, executed on a producer thread.
+   */
+  protected void handleResume() {
+  }
+
+  /**
+   * Handler pause, executed on a producer thread.
+   */
+  protected void handlePause() {
+  }
+
+  /**
+   * Handle a message, executed on a consumer thread.
+   *
+   * @param msg the message
+   */
+  protected void handleMessage(M msg) {
+  }
+
+  /**
+   * Dispose a message, this is called when the queue has been closed and message resource cleanup. No specific
+   * thread assumption can be made on this callback.
+   *
+   * @param msg the message to dispose
+   */
+  // Todo : try remove this
+  protected void handleDispose(M msg) {
   }
 }

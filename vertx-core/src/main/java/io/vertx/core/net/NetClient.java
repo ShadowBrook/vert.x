@@ -11,11 +11,13 @@
 
 package io.vertx.core.net;
 
+import io.vertx.codegen.annotations.GenIgnore;
 import io.vertx.core.Future;
 import io.vertx.codegen.annotations.VertxGen;
 import io.vertx.core.Handler;
 import io.vertx.core.metrics.Measured;
 
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -34,8 +36,7 @@ public interface NetClient extends Measured {
   /**
    * Open a connection to a server at the specific {@code port} and {@code host}.
    * <p>
-   * {@code host} can be a valid host name or IP address. The connect is done asynchronously and on success, a
-   * {@link NetSocket} instance is supplied via the {@code connectHandler} instance
+   * {@code host} can be a valid host name or IP address.
    *
    * @param port  the port
    * @param host  the host
@@ -46,8 +47,7 @@ public interface NetClient extends Measured {
   /**
    * Open a connection to a server at the specific {@code port} and {@code host}.
    * <p>
-   * {@code host} can be a valid host name or IP address. The connect is done asynchronously and on success, a
-   * {@link NetSocket} instance is supplied via the {@code connectHandler} instance
+   * {@code host} can be a valid host name or IP address.
    *
    * @param port the port
    * @param host the host
@@ -58,8 +58,6 @@ public interface NetClient extends Measured {
 
   /**
    * Open a connection to a server at the specific {@code remoteAddress}.
-   * <p>
-   * The connect is done asynchronously and on success, a {@link NetSocket} instance is supplied via the {@code connectHandler} instance
    *
    * @param remoteAddress the remote address
    * @return a future notified when the socket is connected
@@ -68,8 +66,6 @@ public interface NetClient extends Measured {
 
   /**
    * Open a connection to a server at the specific {@code remoteAddress}.
-   * <p>
-   * The connect is done asynchronously and on success, a {@link NetSocket} instance is supplied via the {@code connectHandler} instance
    *
    * @param remoteAddress the remote address
    * @param serverName the SNI server name
@@ -79,8 +75,6 @@ public interface NetClient extends Measured {
 
   /**
    * Open a connection to a server at the specific {@code connectOptions}.
-   * <p>
-   * The connect is done asynchronously and on success, a {@link NetSocket} instance is supplied via the {@code connectHandler} instance
    *
    * @param connectOptions the options describing how to connect to the remote server
    * @return a future notified when the socket is connected
@@ -106,6 +100,13 @@ public interface NetClient extends Measured {
   }
 
   /**
+   * Calls {@link #shutdown(Duration)}.
+   */
+  default Future<Void> shutdown(long timeout, TimeUnit unit) {
+    return shutdown(Duration.of(timeout, unit.toChronoUnit()));
+  }
+
+  /**
    * Initiate the client shutdown sequence.
    * <p>
    * Connections are taken out of service and notified the close sequence has started through {@link NetSocket#shutdownHandler(Handler)}.
@@ -113,9 +114,9 @@ public interface NetClient extends Measured {
    *
    * @return a future notified when the client is closed
    * @param timeout the amount of time after which all resources are forcibly closed
-   * @param unit the of the timeout
    */
-  Future<Void> shutdown(long timeout, TimeUnit unit);
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  Future<Void> shutdown(Duration timeout);
 
   /**
    * <p>Update the client with new SSL {@code options}, the update happens if the options object is valid and different

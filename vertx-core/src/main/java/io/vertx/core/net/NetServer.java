@@ -20,6 +20,7 @@ import io.vertx.codegen.annotations.VertxGen;
 import io.vertx.core.metrics.Measured;
 import io.vertx.core.net.impl.SocketAddressImpl;
 
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -110,7 +111,9 @@ public interface NetServer extends Measured {
    *
    * @return a future completed with the listen operation result
    */
-  Future<Void> close();
+  default Future<Void> close() {
+    return shutdown(0L, TimeUnit.SECONDS);
+  }
 
   /**
    * Shutdown with a 30 seconds timeout ({@code shutdown(30, TimeUnit.SECONDS)}).
@@ -122,6 +125,13 @@ public interface NetServer extends Measured {
   }
 
   /**
+   * Calls {@link #shutdown(Duration)}.
+   */
+  default Future<Void> shutdown(long timeout, TimeUnit unit) {
+    return shutdown(Duration.of(timeout, unit.toChronoUnit()));
+  }
+
+  /**
    * Initiate the server shutdown sequence.
    * <p>
    * Connections are taken out of service and notified the close sequence has started through {@link NetSocket#shutdownHandler(Handler)}.
@@ -129,9 +139,9 @@ public interface NetServer extends Measured {
    *
    * @return a future notified when the client is closed
    * @param timeout the amount of time after which all resources are forcibly closed
-   * @param unit the of the timeout
    */
-  Future<Void> shutdown(long timeout, TimeUnit unit);
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  Future<Void> shutdown(Duration timeout);
 
   /**
    * The actual port the server is listening on. This is useful if you bound the server specifying 0 as port number
@@ -171,10 +181,17 @@ public interface NetServer extends Measured {
   Future<Boolean> updateSSLOptions(ServerSSLOptions options, boolean force);
 
   /**
-   * Update traffic shaping options {@code options}, the update happens if valid values are passed for traffic
-   * shaping options. This update happens synchronously and at best effort for rate update to take effect immediately.
+   * <p>Update the server with new traffic {@code options}, the update happens if the options object is valid and different
+   * from the existing options object.
+   *
+   * <p>The {@code options} object is compared using its {@code equals} method against the existing options to prevent
+   * an update when the objects are equals since loading options can be costly, this can happen for share TCP servers.
+   * When object are equals, setting {@code force} to {@code true} forces the update.
+   *
+   * <p>The boolean succeeded future result indicates whether the update occurred.
    *
    * @param options the new traffic shaping options
+   * @return a future signaling the update success
    */
-  void updateTrafficShapingOptions(TrafficShapingOptions options);
+  Future<Boolean> updateTrafficShapingOptions(TrafficShapingOptions options);
 }

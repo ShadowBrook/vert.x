@@ -11,9 +11,7 @@
 
 package io.vertx.tests.vertx;
 
-import io.vertx.core.Promise;
-import io.vertx.core.Vertx;
-import io.vertx.core.VertxOptions;
+import io.vertx.core.*;
 import io.vertx.core.spi.cluster.ClusterManager;
 import io.vertx.test.core.VertxTestBase;
 import io.vertx.test.fakecluster.FakeClusterManager;
@@ -41,31 +39,27 @@ public class CreateVertxTest extends VertxTestBase {
   @Test
   public void testCreateClusteredVertxAsync() {
     VertxOptions options = new VertxOptions();
-    clusteredVertx(options, ar -> {
-      assertTrue(ar.succeeded());
-      assertNotNull(ar.result());
-      assertTrue(ar.result().isClustered());
-      Vertx v = ar.result();
-      v.close().onComplete(onSuccess(v2 -> {
-        testComplete();
-      }));
-    });
-    await();
+    clusteredVertx(options)
+      .compose(v -> {
+        assertTrue(v.isClustered());
+        return v.close();
+      }).await();
   }
 
   @Test
   public void testCreateClusteredVertxAsyncDetectJoinFailure() {
     ClusterManager clusterManager = new FakeClusterManager(){
       @Override
-      public void join(Promise<Void> promise) {
+      public void join(Completable<Void> promise) {
         promise.fail("joinfailure");
       }
     };
-    clusteredVertx(new VertxOptions(), clusterManager, ar -> {
-      assertTrue(ar.failed());
-      assertEquals("joinfailure", ar.cause().getMessage());
-      testComplete();
-    });
-    await();
+    try {
+      clusteredVertx(new VertxOptions(), clusterManager).await();
+    } catch (Throwable e) {
+      assertEquals("joinfailure", e.getMessage());
+      return;
+    }
+    fail();
   }
 }

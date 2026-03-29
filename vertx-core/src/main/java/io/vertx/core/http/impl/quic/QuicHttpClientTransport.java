@@ -1,0 +1,127 @@
+/*
+ * Copyright (c) 2011-2025 Contributors to the Eclipse Foundation
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0, or the Apache License, Version 2.0
+ * which is available at https://www.apache.org/licenses/LICENSE-2.0.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
+ */
+package io.vertx.core.http.impl.quic;
+
+import io.netty.handler.codec.http3.Http3;
+import io.netty.util.internal.logging.InternalLogLevel;
+import io.vertx.core.Future;
+import io.vertx.core.http.Http3ClientConfig;
+import io.vertx.core.http.Http3Settings;
+import io.vertx.core.http.HttpClientConfig;
+import io.vertx.core.http.ObservabilityConfig;
+import io.vertx.core.http.impl.HttpClientConnection;
+import io.vertx.core.http.impl.HttpConnectParams;
+import io.vertx.core.http.impl.http3.Http3ClientConnection;
+import io.vertx.core.http.impl.http3.Http3FrameLogger;
+import io.vertx.core.internal.ContextInternal;
+import io.vertx.core.internal.VertxInternal;
+import io.vertx.core.internal.http.HttpClientTransport;
+import io.vertx.core.internal.quic.QuicConnectionInternal;
+import io.vertx.core.net.*;
+import io.vertx.core.net.impl.SocketAddressImpl;
+import io.vertx.core.net.impl.quic.QuicClientImpl;
+import io.vertx.core.spi.metrics.ClientMetrics;
+import io.vertx.core.spi.observability.HttpRequest;
+import io.vertx.core.spi.observability.HttpResponse;
+
+import java.time.Duration;
+import java.util.Arrays;
+
+public class QuicHttpClientTransport implements HttpClientTransport {
+
+  private final VertxInternal vertx;
+  private final QuicClient client;
+  private final long keepAliveTimeoutMillis;
+  private final Http3Settings localSettings;
+  private final Http3FrameLogger frameLogger;
+  private final long maxConcurrency;
+
+  public QuicHttpClientTransport(VertxInternal vertx, HttpClientConfig config) {
+
+    QuicClientConfig quicConfig = new QuicClientConfig(config.getQuicConfig());
+
+    ObservabilityConfig observabilityConfig = config.getObservabilityConfig();
+    if (observabilityConfig != null) {
+      quicConfig.setMetricsName(observabilityConfig.getMetricsName());
+    }
+
+    Http3ClientConfig http3Config = config.getHttp3Config();
+    if (http3Config == null) {
+      http3Config = new Http3ClientConfig();
+    }
+
+    Http3Settings localSettings = http3Config.getInitialSettings();
+    if (localSettings == null) {
+      localSettings = new Http3Settings();
+    }
+
+    long maxConcurrency = http3Config.getMultiplexingLimit() <= 0 ? Long.MAX_VALUE : http3Config.getMultiplexingLimit();
+
+    boolean logEnabled = quicConfig.getLogConfig() != null && quicConfig.getLogConfig().isEnabled();
+    quicConfig.setLogConfig(null);
+
+    QuicClient client = new QuicClientImpl(vertx, quicConfig, "http", null);
+
+    this.maxConcurrency = maxConcurrency;
+    this.vertx = vertx;
+    this.keepAliveTimeoutMillis = http3Config.getKeepAliveTimeout() == null ? 0L : http3Config.getKeepAliveTimeout().toMillis();
+    this.localSettings = localSettings;
+    this.client = client;
+    this.frameLogger = logEnabled ? new Http3FrameLogger(InternalLogLevel.DEBUG) : null;
+  }
+
+  public QuicClientImpl client() {
+    return (QuicClientImpl)client;
+  }
+
+  @Override
+  public Future<HttpClientConnection> connect(ContextInternal context, SocketAddress server, HostAndPort authority, HttpConnectParams params, ClientMetrics<?, ?, ?> clientMetrics) {
+    ClientSSLOptions sslOptions = params.sslOptions;
+    if (sslOptions == null) {
+      return context.failedFuture("Missing clients SSL options");
+    }
+    sslOptions = sslOptions
+      .copy()
+      .setUseAlpn(true)
+      .setApplicationLayerProtocols(Arrays.asList(Http3.supportedApplicationProtocols()));
+
+    // Merge server and authority
+    SocketAddressImpl tmp = (SocketAddressImpl)server;
+    server = new SocketAddressImpl(authority.host(), server.port(), tmp.ipAddress());
+
+    QuicConnectOptions connectOptions = new QuicConnectOptions();
+    connectOptions.setSslOptions(sslOptions);
+    Future<QuicConnection> f = client.connect(server, connectOptions);
+    return f.map(res -> {
+      long concurrency = Math.min(res.transportParams().initialMaxStreamsBidi(), maxConcurrency);
+      Http3ClientConnection c = new Http3ClientConnection(
+        (QuicConnectionInternal) res,
+        authority,
+        (ClientMetrics<Object, HttpRequest, HttpResponse>) clientMetrics,
+        keepAliveTimeoutMillis,
+        localSettings,
+        frameLogger,
+        concurrency);
+      c.init();
+      return c;
+    });
+  }
+
+  @Override
+  public Future<Void> shutdown(Duration timeout) {
+    return client.shutdown(timeout);
+  }
+
+  @Override
+  public Future<Void> close() {
+    return client.close();
+  }
+}

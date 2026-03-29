@@ -14,7 +14,6 @@ package io.vertx.test.fakemetrics;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.ServerWebSocket;
-import io.vertx.core.http.WebSocketBase;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.core.spi.metrics.HttpServerMetrics;
 import io.vertx.core.spi.observability.HttpRequest;
@@ -27,13 +26,23 @@ import java.util.concurrent.ConcurrentMap;
 /**
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
-public class FakeHttpServerMetrics extends FakeTCPMetrics implements HttpServerMetrics<HttpServerMetric, WebSocketMetric, SocketMetric> {
+public class FakeHttpServerMetrics extends FakeWebSocketMetrics implements HttpServerMetrics<HttpServerMetric, WebSocketMetric> {
 
-  private final ConcurrentMap<WebSocketBase, WebSocketMetric> webSockets = new ConcurrentHashMap<>();
   private final Set<HttpServerMetric> requests = ConcurrentHashMap.newKeySet();
+  private final SocketAddress tcpLocalAddress;
+  private final SocketAddress udpLocalAddress;
 
-  public WebSocketMetric getWebSocketMetric(ServerWebSocket ws) {
-    return webSockets.get(ws);
+  public FakeHttpServerMetrics(SocketAddress tcpLocalAddress, SocketAddress udpLocalAddress) {
+    this.tcpLocalAddress = tcpLocalAddress;
+    this.udpLocalAddress = udpLocalAddress;
+  }
+
+  public SocketAddress tcpLocalAddress() {
+    return tcpLocalAddress;
+  }
+
+  public SocketAddress udpLocalAddress() {
+    return udpLocalAddress;
   }
 
   public HttpServerMetric getRequestMetric(HttpServerRequest request) {
@@ -45,8 +54,8 @@ public class FakeHttpServerMetrics extends FakeTCPMetrics implements HttpServerM
   }
 
   @Override
-  public HttpServerMetric requestBegin(SocketMetric socketMetric, HttpRequest request) {
-    HttpServerMetric metric = new HttpServerMetric(request, socketMetric);
+  public HttpServerMetric requestBegin(SocketAddress remoteAddress, HttpRequest request) {
+    HttpServerMetric metric = new HttpServerMetric(request, remoteAddress);
     requests.add(metric);
     return metric;
   }
@@ -58,8 +67,8 @@ public class FakeHttpServerMetrics extends FakeTCPMetrics implements HttpServerM
   }
 
   @Override
-  public HttpServerMetric responsePushed(SocketMetric socketMetric, HttpMethod method, String uri, HttpResponse response) {
-    HttpServerMetric requestMetric = new HttpServerMetric(uri, socketMetric);
+  public HttpServerMetric responsePushed(SocketAddress remoteAddress, HttpMethod method, String uri, HttpResponse response) {
+    HttpServerMetric requestMetric = new HttpServerMetric(uri, remoteAddress);
     requestMetric.response.set(response);
     requests.add(requestMetric);
     return requestMetric;
@@ -81,24 +90,6 @@ public class FakeHttpServerMetrics extends FakeTCPMetrics implements HttpServerM
     requests.remove(requestMetric);
     requestMetric.responseEnded.set(true);
     requestMetric.bytesWritten.set(bytesWritten);
-  }
-
-  @Override
-  public WebSocketMetric connected(SocketMetric socketMetric, HttpServerMetric requestMetric, ServerWebSocket serverWebSocket) {
-    WebSocketMetric metric = new WebSocketMetric(serverWebSocket);
-    if (webSockets.put(serverWebSocket, metric) != null) {
-      throw new AssertionError();
-    }
-    return metric;
-  }
-
-  @Override
-  public void disconnected(WebSocketMetric serverWebSocketMetric) {
-    webSockets.remove(serverWebSocketMetric.ws);
-  }
-
-  @Override
-  public void exceptionOccurred(SocketMetric socketMetric, SocketAddress remoteAddress, Throwable t) {
   }
 
   @Override

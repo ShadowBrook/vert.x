@@ -10,12 +10,7 @@
  */
 package io.vertx.core.internal.tls;
 
-import io.netty.handler.ssl.SniHandler;
 import io.netty.handler.ssl.SslContext;
-import io.netty.util.AsyncMapping;
-import io.vertx.core.VertxException;
-import io.vertx.core.http.ClientAuth;
-import io.vertx.core.internal.net.VertxSslContext;
 import io.vertx.core.spi.tls.SslContextFactory;
 
 import javax.net.ssl.*;
@@ -24,7 +19,6 @@ import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executor;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -33,34 +27,24 @@ import java.util.function.Supplier;
  *
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
-public class SslContextProvider {
+public abstract class SslContextProvider {
 
-  private static int idx(boolean useAlpn) {
-    return useAlpn ? 0 : 1;
-  }
+  private static final List<String> VALID_PROTOCOLS = List.of("TLSv1.3", "TLSv1.2", "TLSv1.1", "TLSv1", "SSLv3", "SSLv2Hello", "DTLSv1.2", "DTLSv1.0");
 
   private final boolean useWorkerPool;
-  private final Supplier<SslContextFactory> provider;
-  private final Set<String> enabledProtocols;
   private final List<CRL> crls;
-  private final ClientAuth clientAuth;
-  private final Set<String> enabledCipherSuites;
-  private final List<String> applicationProtocols;
-  private final String endpointIdentificationAlgorithm;
   private final KeyManagerFactory keyManagerFactory;
   private final TrustManagerFactory trustManagerFactory;
   private final Function<String, KeyManagerFactory> keyManagerFactoryMapper;
   private final Function<String, TrustManager[]> trustManagerMapper;
+  protected final Supplier<SslContextFactory> provider;
+  protected final Set<String> enabledProtocols;
+  protected final Set<String> enabledCipherSuites;
 
-  private final SslContext[] sslContexts = new SslContext[2];
-  private final Map<String, SslContext>[] sslContextMaps = new Map[]{
-    new ConcurrentHashMap<>(), new ConcurrentHashMap<>()
-  };
+  private final Map<String, SslContext> sslContexts = new ConcurrentHashMap<>();
+  private final Map<String, SslContext> sslContextMaps = new ConcurrentHashMap<>();
 
   public SslContextProvider(boolean useWorkerPool,
-                            ClientAuth clientAuth,
-                            String endpointIdentificationAlgorithm,
-                            List<String> applicationProtocols,
                             Set<String> enabledCipherSuites,
                             Set<String> enabledProtocols,
                             KeyManagerFactory keyManagerFactory,
@@ -69,12 +53,14 @@ public class SslContextProvider {
                             Function<String, TrustManager[]> trustManagerMapper,
                             List<CRL> crls,
                             Supplier<SslContextFactory> provider) {
+
+    // Filter the list of enabled protocols
+    enabledProtocols = new HashSet<>(enabledProtocols);
+    enabledProtocols.retainAll(VALID_PROTOCOLS);
+
     this.useWorkerPool = useWorkerPool;
     this.provider = provider;
-    this.clientAuth = clientAuth;
-    this.endpointIdentificationAlgorithm = endpointIdentificationAlgorithm;
-    this.applicationProtocols = applicationProtocols;
-    this.enabledCipherSuites = new HashSet<>(enabledCipherSuites);
+    this.enabledCipherSuites = enabledCipherSuites;
     this.enabledProtocols = enabledProtocols;
     this.keyManagerFactory = keyManagerFactory;
     this.trustManagerFactory = trustManagerFactory;
@@ -88,145 +74,42 @@ public class SslContextProvider {
   }
 
   public int sniEntrySize() {
-    return sslContextMaps[0].size() + sslContextMaps[1].size();
+    return sslContextMaps.size();
   }
 
-  public VertxSslContext createContext(boolean server,
-                                       KeyManagerFactory keyManagerFactory,
-                                       TrustManager[] trustManagers,
-                                       String serverName,
-                                       boolean useAlpn) {
-    if (keyManagerFactory == null) {
-      keyManagerFactory = defaultKeyManagerFactory();
-    }
-    if (trustManagers == null) {
-      trustManagers = defaultTrustManagers();
-    }
-    if (server) {
-      return createServerContext(keyManagerFactory, trustManagers, serverName, useAlpn);
-    } else {
-      return createClientContext(keyManagerFactory, trustManagers, serverName, useAlpn);
-    }
-  }
+  protected abstract SslContext createContext(KeyManagerFactory keyManagerFactory,  TrustManager[] trustManagers, String serverName, List<String> applicationProtocols);
 
-  public SslContext sslClientContext(String serverName, boolean useAlpn) {
-    try {
-      return sslContext(serverName, useAlpn, false);
-    } catch (Exception e) {
-      throw new VertxException(e);
-    }
-  }
-
-  public SslContext sslContext(String serverName, boolean useAlpn, boolean server) throws Exception {
-    int idx = idx(useAlpn);
+  protected SslContext sslContext(String serverName, List<String> applicationProtocols, boolean server) throws Exception {
     if (serverName != null) {
       KeyManagerFactory kmf = resolveKeyManagerFactory(serverName);
       TrustManager[] trustManagers = resolveTrustManagers(serverName);
       if (kmf != null || trustManagers != null || !server) {
-        return sslContextMaps[idx].computeIfAbsent(serverName, s -> createContext(server, kmf, trustManagers, s, useAlpn));
+        return sslContextMaps.computeIfAbsent(serverName, s -> {
+          return createContext(kmf, trustManagers, s, applicationProtocols);
+        });
       }
     }
-    if (sslContexts[idx] == null) {
-      SslContext context = createContext(server, null, null, serverName, useAlpn);
-      sslContexts[idx] = context;
-    }
-    return sslContexts[idx];
-  }
-
-  public SslContext sslServerContext(boolean useAlpn) {
-    try {
-      return sslContext(null, useAlpn, true);
-    } catch (Exception e) {
-      throw new VertxException(e);
-    }
-  }
-
-  /**
-   * Server name {@link AsyncMapping} for {@link SniHandler}, mapping happens on a Vert.x worker thread.
-   *
-   * @return the {@link AsyncMapping}
-   */
-  public AsyncMapping<? super String, ? extends SslContext> serverNameMapping(Executor workerPool, boolean useAlpn) {
-    return (AsyncMapping<String, SslContext>) (serverName, promise) -> {
-      workerPool.execute(() -> {
-        SslContext sslContext;
-        try {
-          sslContext = sslContext(serverName, useAlpn, true);
-        } catch (Exception e) {
-          promise.setFailure(e);
-          return;
+    String alpnKey;
+    if (applicationProtocols == null) {
+      alpnKey = "";
+    } else {
+      StringBuilder builder = new StringBuilder();
+      builder.append('(');
+      for (int i = 0; i < applicationProtocols.size();i++) {
+        if (i > 0) {
+          builder.append(',');
         }
-        promise.setSuccess(sslContext);
-      });
-      return promise;
-    };
-  }
-
-  public VertxSslContext createContext(boolean server, boolean useAlpn) {
-    return createContext(server, defaultKeyManagerFactory(), defaultTrustManagers(), null, useAlpn);
-  }
-
-  public VertxSslContext createClientContext(
-    KeyManagerFactory keyManagerFactory,
-    TrustManager[] trustManagers,
-    String serverName,
-    boolean useAlpn) {
-    try {
-      SslContextFactory factory = provider.get()
-        .useAlpn(useAlpn)
-        .forClient(true)
-        .enabledCipherSuites(enabledCipherSuites)
-        .applicationProtocols(applicationProtocols);
-      if (keyManagerFactory != null) {
-        factory.keyMananagerFactory(keyManagerFactory);
+        builder.append(applicationProtocols.get(i));
       }
-      if (trustManagers != null) {
-        TrustManagerFactory tmf = buildVertxTrustManagerFactory(trustManagers);
-        factory.trustManagerFactory(tmf);
-      }
-      SslContext context = factory.create();
-      return new VertxSslContext(context) {
-        @Override
-        protected void initEngine(SSLEngine engine) {
-          configureEngine(engine, enabledProtocols, serverName, true);
-        }
-      };
-    } catch (Exception e) {
-      throw new VertxException(e);
+      builder.append(')');
+      alpnKey = builder.toString();
     }
-  }
-
-  public VertxSslContext createServerContext(KeyManagerFactory keyManagerFactory,
-                                        TrustManager[] trustManagers,
-                                        String serverName,
-                                        boolean useAlpn) {
-    try {
-      SslContextFactory factory = provider.get()
-        .useAlpn(useAlpn)
-        .forClient(false)
-        .enabledCipherSuites(enabledCipherSuites)
-        .applicationProtocols(applicationProtocols);
-      factory.clientAuth(SslContextManager.CLIENT_AUTH_MAPPING.get(clientAuth));
-      if (serverName != null) {
-        factory.serverName(serverName);
-      }
-      if (keyManagerFactory != null) {
-        factory.keyMananagerFactory(keyManagerFactory);
-      }
-      if (trustManagers != null) {
-        TrustManagerFactory tmf = buildVertxTrustManagerFactory(trustManagers);
-        factory.trustManagerFactory(tmf);
-      }
-      SslContext context = factory.create();
-      return new VertxSslContext(context) {
-        @Override
-        protected void initEngine(SSLEngine engine) {
-          configureEngine(engine, enabledProtocols, serverName, false);
-        }
-      };
-    } catch (Exception e) {
-      throw new VertxException(e);
+    SslContext context = sslContexts.get(alpnKey);
+    if (context == null) {
+      context = createContext(null, null, null, applicationProtocols);
+      sslContexts.putIfAbsent(alpnKey, context);
     }
+    return context;
   }
 
   public TrustManager[] defaultTrustManagers() {
@@ -273,7 +156,7 @@ public class SslContextProvider {
     return null;
   }
 
-  private VertxTrustManagerFactory buildVertxTrustManagerFactory(TrustManager[] mgrs) {
+  protected final VertxTrustManagerFactory buildVertxTrustManagerFactory(TrustManager[] mgrs) {
     if (crls != null && crls.size() > 0) {
       mgrs = createUntrustRevokedCertTrustManager(mgrs, crls);
     }
@@ -318,21 +201,5 @@ public class SslContextProvider {
       }
     }
     return trustMgrs;
-  }
-
-  public void configureEngine(SSLEngine engine, Set<String> enabledProtocols, String serverName, boolean client) {
-    Set<String> protocols = new LinkedHashSet<>(enabledProtocols);
-    protocols.retainAll(Arrays.asList(engine.getSupportedProtocols()));
-    engine.setEnabledProtocols(protocols.toArray(new String[protocols.size()]));
-    if (client) {
-      SSLParameters sslParameters = engine.getSSLParameters();
-      sslParameters.setEndpointIdentificationAlgorithm(endpointIdentificationAlgorithm != null ? endpointIdentificationAlgorithm : "");
-      engine.setSSLParameters(sslParameters);
-    }
-    if (serverName != null) {
-      SSLParameters sslParameters = engine.getSSLParameters();
-      sslParameters.setServerNames(Collections.singletonList(new SNIHostName(serverName)));
-      engine.setSSLParameters(sslParameters);
-    }
   }
 }

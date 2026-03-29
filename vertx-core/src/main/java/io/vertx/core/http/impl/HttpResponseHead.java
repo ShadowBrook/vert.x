@@ -17,26 +17,22 @@ import io.vertx.core.spi.observability.HttpResponse;
 /**
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
-public class HttpResponseHead implements HttpResponse {
+public class HttpResponseHead {
 
-  public final HttpVersion version;
   public final int statusCode;
   public final String statusMessage;
   public final MultiMap headers;
 
-  public HttpResponseHead(HttpVersion version, int statusCode, String statusMessage, MultiMap headers) {
-    this.version = version;
+  public HttpResponseHead(int statusCode, String statusMessage, MultiMap headers) {
     this.statusCode = statusCode;
     this.statusMessage = statusMessage;
     this.headers = headers;
   }
 
-  @Override
   public int statusCode() {
     return statusCode;
   }
 
-  @Override
   public MultiMap headers() {
     return headers;
   }

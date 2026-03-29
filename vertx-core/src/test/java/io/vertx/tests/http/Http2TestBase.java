@@ -29,6 +29,10 @@ import java.util.concurrent.TimeUnit;
  */
 public class Http2TestBase extends HttpTestBase {
 
+  public static HttpServerOptions createHttp2ServerOptions() {
+    return createHttp2ServerOptions(DEFAULT_HTTPS_PORT, DEFAULT_HTTPS_HOST);
+  }
+
   public static HttpServerOptions createHttp2ServerOptions(int port, String host) {
     return new HttpServerOptions()
         .setPort(port)
@@ -36,7 +40,7 @@ public class Http2TestBase extends HttpTestBase {
         .setSslEngineOptions(new JdkSSLEngineOptions())
         .setUseAlpn(true)
         .setSsl(true)
-        .addEnabledCipherSuite("TLS_RSA_WITH_AES_128_CBC_SHA") // Non Diffie-helman -> debuggable in wireshark
+        .addEnabledCipherSuite("TLS_AES_256_GCM_SHA384") // Non Diffie-helman -> debuggable in wireshark
         .setKeyCertOptions(Cert.SERVER_JKS.get());
   };
 
@@ -56,14 +60,9 @@ public class Http2TestBase extends HttpTestBase {
   @Override
   public void setUp() throws Exception {
     eventLoopGroups.clear();
-    serverOptions =  createHttp2ServerOptions(DEFAULT_HTTPS_PORT, DEFAULT_HTTPS_HOST);
-    clientOptions = createHttp2ClientOptions();
+    serverOptions =  createBaseServerOptions();
+    clientOptions = createBaseClientOptions();
     super.setUp();
-  }
-
-  @Override
-  protected void configureDomainSockets() throws Exception {
-    // Nope
   }
 
   @Override
@@ -76,11 +75,11 @@ public class Http2TestBase extends HttpTestBase {
 
   @Override
   protected HttpServerOptions createBaseServerOptions() {
-    return serverOptions;
+    return createHttp2ServerOptions(DEFAULT_HTTPS_PORT, DEFAULT_HTTPS_HOST);
   }
 
   @Override
   protected HttpClientOptions createBaseClientOptions() {
-    return clientOptions;
+    return createHttp2ClientOptions();
   }
 }

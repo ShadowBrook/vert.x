@@ -11,18 +11,23 @@
 package io.vertx.core.impl;
 
 import io.netty.channel.EventLoop;
+import io.vertx.core.internal.EventExecutor;
 
 /**
  * Execute events on an event-loop.
  *
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
-public class EventLoopExecutor implements EventExecutor {
+public final class EventLoopExecutor implements EventExecutor {
 
-  private final EventLoop eventLoop;
+  final EventLoop eventLoop;
 
   public EventLoopExecutor(EventLoop eventLoop) {
     this.eventLoop = eventLoop;
+  }
+
+  public EventLoop eventLoop() {
+    return eventLoop;
   }
 
   @Override

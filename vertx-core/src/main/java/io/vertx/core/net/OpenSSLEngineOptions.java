@@ -25,7 +25,7 @@ import io.vertx.core.spi.tls.SslContextFactory;
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
 @DataObject
-@JsonGen(publicConverter = false)
+@JsonGen(publicConverter = false, inheritConverter = true)
 public class OpenSSLEngineOptions extends SSLEngineOptions {
 
   /**
@@ -96,7 +96,11 @@ public class OpenSSLEngineOptions extends SSLEngineOptions {
 
   @Override
   public OpenSSLEngineOptions copy() {
-    return new OpenSSLEngineOptions(this);
+    if (getClass() == OpenSSLEngineOptions.class) {
+      return new OpenSSLEngineOptions(this);
+    } else {
+      return this;
+    }
   }
 
   @Override

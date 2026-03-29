@@ -12,22 +12,42 @@
 package io.vertx.tests.http;
 
 
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelOutboundHandlerAdapter;
 import io.netty.channel.ChannelPipeline;
+import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.http.HttpHeaderNames;
-import io.netty.handler.codec.http.websocketx.*;
+import io.netty.handler.codec.http.websocketx.CloseWebSocketFrame;
+import io.netty.handler.codec.http.websocketx.PingWebSocketFrame;
+import io.netty.handler.codec.http.websocketx.WebSocket13FrameDecoder;
+import io.netty.handler.codec.http.websocketx.WebSocket13FrameEncoder;
+import io.netty.handler.codec.http.websocketx.WebSocketHandshakeException;
 import io.netty.util.ReferenceCountUtil;
-import io.vertx.core.*;
-import io.vertx.core.http.*;
-import io.vertx.core.http.WebSocketFrame;
-import io.vertx.core.internal.VertxInternal;
+import io.vertx.core.AbstractVerticle;
+import io.vertx.core.AsyncResult;
+import io.vertx.core.Context;
+import io.vertx.core.DeploymentOptions;
+import io.vertx.core.Future;
+import io.vertx.core.Handler;
+import io.vertx.core.MultiMap;
+import io.vertx.core.Promise;
+import io.vertx.core.ThreadingModel;
+import io.vertx.core.Vertx;
+import io.vertx.core.VertxOptions;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.*;
+import io.vertx.core.http.WebSocketVersion;
+import io.vertx.core.http.impl.http1.Http1ClientConnection;
+import io.vertx.core.http.impl.http1.Http1ServerConnection;
+import io.vertx.core.internal.http.WebSocketInternal;
+import io.vertx.core.http.impl.websocket.WebSocketFrameImpl;
+import io.vertx.core.internal.VertxInternal;
 import io.vertx.core.internal.buffer.BufferInternal;
-import io.vertx.core.http.impl.Http1xClientConnection;
-import io.vertx.core.http.impl.Http1xServerConnection;
-import io.vertx.core.http.impl.WebSocketInternal;
-import io.vertx.core.http.impl.ws.WebSocketFrameImpl;
-import io.vertx.core.net.*;
 import io.vertx.core.internal.net.NetSocketInternal;
+import io.vertx.core.net.ClientSSLOptions;
+import io.vertx.core.net.NetServer;
+import io.vertx.core.net.NetSocket;
+import io.vertx.core.net.SocketAddress;
 import io.vertx.test.core.CheckingSender;
 import io.vertx.test.core.TestUtils;
 import io.vertx.test.core.VertxTestBase;
@@ -44,16 +64,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.Certificate;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Base64;
-import java.util.Collections;
-import java.util.Deque;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -70,8 +81,14 @@ import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static io.vertx.test.http.HttpTestBase.*;
-import static io.vertx.test.core.TestUtils.*;
+import static io.vertx.test.core.TestUtils.assertIllegalStateException;
+import static io.vertx.test.core.TestUtils.assertNullPointerException;
+import static io.vertx.test.core.TestUtils.randomAlphaString;
+import static io.vertx.test.http.HttpTestBase.DEFAULT_HTTPS_HOST;
+import static io.vertx.test.http.HttpTestBase.DEFAULT_HTTPS_PORT;
+import static io.vertx.test.http.HttpTestBase.DEFAULT_HTTP_HOST;
+import static io.vertx.test.http.HttpTestBase.DEFAULT_HTTP_HOST_AND_PORT;
+import static io.vertx.test.http.HttpTestBase.DEFAULT_HTTP_PORT;
 
 /**
  * @author <a href="http://tfox.org">Tim Fox</a>
@@ -116,117 +133,117 @@ public class WebSocketTest extends VertxTestBase {
 
   @Test
   public void testRejectHybi00() throws Exception {
-    testReject(WebsocketVersion.V00, null, 502, "Bad Gateway");
+    testReject(WebSocketVersion.V00, null, 502, "Bad Gateway");
   }
 
   @Test
   public void testRejectHybi08() throws Exception {
-    testReject(WebsocketVersion.V08, null, 502, "Bad Gateway");
+    testReject(WebSocketVersion.V08, null, 502, "Bad Gateway");
   }
 
   @Test
   public void testRejectWithStatusCode() throws Exception {
-    testReject(WebsocketVersion.V08, 404, 404, "Not Found");
+    testReject(WebSocketVersion.V08, 404, 404, "Not Found");
   }
 
   @Test
   public void testWSBinaryHybi00() throws Exception {
-    testWSFrames(true, WebsocketVersion.V00);
+    testWSFrames(true, WebSocketVersion.V00);
   }
 
   @Test
   public void testWSStringHybi00() throws Exception {
-    testWSFrames(false, WebsocketVersion.V00);
+    testWSFrames(false, WebSocketVersion.V00);
   }
 
   @Test
   public void testWSBinaryHybi08() throws Exception {
-    testWSFrames(true, WebsocketVersion.V08);
+    testWSFrames(true, WebSocketVersion.V08);
   }
 
   @Test
   public void testWSStringHybi08() throws Exception {
-    testWSFrames(false, WebsocketVersion.V08);
+    testWSFrames(false, WebSocketVersion.V08);
   }
 
   @Test
   public void testWSBinaryHybi17() throws Exception {
-    testWSFrames(true, WebsocketVersion.V13);
+    testWSFrames(true, WebSocketVersion.V13);
   }
 
   @Test
   public void testWSStringHybi17() throws Exception {
-    testWSFrames(false, WebsocketVersion.V13);
+    testWSFrames(false, WebSocketVersion.V13);
   }
 
   @Test
   public void testWSStreamsHybi00() throws Exception {
-    testWSWriteStream(WebsocketVersion.V00);
+    testWSWriteStream(WebSocketVersion.V00);
   }
 
   @Test
   public void testWSStreamsHybi08() throws Exception {
-    testWSWriteStream(WebsocketVersion.V08);
+    testWSWriteStream(WebSocketVersion.V08);
   }
 
   @Test
   public void testWSStreamsHybi17() throws Exception {
-    testWSWriteStream(WebsocketVersion.V13);
+    testWSWriteStream(WebSocketVersion.V13);
   }
 
   @Test
   public void testWriteFromConnectHybi00() throws Exception {
-    testWriteFromConnectHandler(WebsocketVersion.V00);
+    testWriteFromConnectHandler(WebSocketVersion.V00);
   }
 
   @Test
   public void testWriteFromConnectHybi08() throws Exception {
-    testWriteFromConnectHandler(WebsocketVersion.V08);
+    testWriteFromConnectHandler(WebSocketVersion.V08);
   }
 
   @Test
   public void testWriteFromConnectHybi17() throws Exception {
-    testWriteFromConnectHandler(WebsocketVersion.V13);
+    testWriteFromConnectHandler(WebSocketVersion.V13);
   }
 
   @Test
   public void testContinuationWriteFromConnectHybi08() throws Exception {
-    testContinuationWriteFromConnectHandler(WebsocketVersion.V08);
+    testContinuationWriteFromConnectHandler(WebSocketVersion.V08);
   }
 
   @Test
   public void testContinuationWriteFromConnectHybi17() throws Exception {
-    testContinuationWriteFromConnectHandler(WebsocketVersion.V13);
+    testContinuationWriteFromConnectHandler(WebSocketVersion.V13);
   }
 
   @Test
   public void testValidSubProtocolHybi00() throws Exception {
-    testValidSubProtocol(WebsocketVersion.V00);
+    testValidSubProtocol(WebSocketVersion.V00);
   }
 
   @Test
   public void testValidSubProtocolHybi08() throws Exception {
-    testValidSubProtocol(WebsocketVersion.V08);
+    testValidSubProtocol(WebSocketVersion.V08);
   }
 
   @Test
   public void testValidSubProtocolHybi17() throws Exception {
-    testValidSubProtocol(WebsocketVersion.V13);
+    testValidSubProtocol(WebSocketVersion.V13);
   }
 
   @Test
   public void testInvalidSubProtocolHybi00() throws Exception {
-    testInvalidSubProtocol(WebsocketVersion.V00);
+    testInvalidSubProtocol(WebSocketVersion.V00);
   }
 
   @Test
   public void testInvalidSubProtocolHybi08() throws Exception {
-    testInvalidSubProtocol(WebsocketVersion.V08);
+    testInvalidSubProtocol(WebSocketVersion.V08);
   }
 
   @Test
   public void testInvalidSubProtocolHybi17() throws Exception {
-    testInvalidSubProtocol(WebsocketVersion.V13);
+    testInvalidSubProtocol(WebSocketVersion.V13);
   }
 
   // TODO close and exception tests
@@ -409,9 +426,6 @@ public class WebSocketTest extends VertxTestBase {
                        boolean sni,
                        String[] enabledCipherSuites,
                        Function<WebSocketClient, Future<WebSocket>> wsProvider) throws Exception {
-    if (true) {
-      return;
-    }
     WebSocketClientOptions options = new WebSocketClientOptions();
     options.setSsl(clientSsl);
     options.setTrustAll(clientTrustAll);
@@ -503,13 +517,41 @@ public class WebSocketTest extends VertxTestBase {
   }
 
   @Test
-  // Let's manually handle the WebSocket handshake and write a frame to the client
   public void testHandleWSManually() throws Exception {
+    testHandleWSManually(false, false);
+  }
+
+  @Test
+  public void testHandleWSManuallyDeclineExtension() throws Exception {
+    testHandleWSManually(true, false);
+  }
+
+  @Test
+  public void testHandleWSManuallyDeclineSubprotocol() throws Exception {
+    testHandleWSManually(false, true);
+  }
+
+  private void testHandleWSManually(boolean declineExtension, boolean declineSubprotocol) throws Exception {
     String path = "/some/path";
     String message = "here is some text data";
+    String extension = "permessage-deflate";
+    String subProtocol = "myprotocol";
 
-    server = vertx.createHttpServer(new HttpServerOptions().setPort(DEFAULT_HTTP_PORT)).requestHandler(req -> {
-      getUpgradedNetSocket(req, path).onComplete(onSuccess(sock -> {
+    HttpServerOptions serverOptions = new HttpServerOptions()
+      .setPort(DEFAULT_HTTP_PORT)
+      .setPerMessageWebSocketCompressionSupported(true) // This should be ignored if declineExtension is true
+      .setPerFrameWebSocketCompressionSupported(true) // This should be ignored if declineExtension is true
+      .addWebSocketSubProtocol(subProtocol);
+    server = vertx.createHttpServer(serverOptions).requestHandler(req -> {
+      Map<String, String> extraResponseHeaders = new HashMap<>();
+      if (!declineExtension) {
+        assertEquals(extension, req.headers().get("sec-websocket-extensions"));
+        extraResponseHeaders.put("sec-websocket-extensions", extension);
+      }
+      if (!declineSubprotocol) {
+        extraResponseHeaders.put("sec-websocket-protocol", subProtocol);
+      }
+      getUpgradedNetSocket(req, path, extraResponseHeaders).onComplete(onSuccess(sock -> {
         // Let's write a Text frame raw
         Buffer buff = Buffer.buffer();
         buff.appendByte((byte)129); // Text frame
@@ -519,21 +561,45 @@ public class WebSocketTest extends VertxTestBase {
       }));
     });
     awaitFuture(server.listen());
-    client = vertx.createWebSocketClient();
+
+    WebSocketClientOptions clientOptions = new WebSocketClientOptions()
+      .setTryUsePerMessageCompression(true)
+      .setTryUsePerFrameCompression(false);
+    client = vertx.createWebSocketClient(clientOptions);
     vertx.runOnContext(v -> {
-      client.connect(DEFAULT_HTTP_PORT, HttpTestBase.DEFAULT_HTTP_HOST, path).onComplete(onSuccess(ws -> {
-        ws.handler(buff -> {
-          assertEquals(message, buff.toString("UTF-8"));
+      WebSocketConnectOptions connectOptions = new WebSocketConnectOptions()
+        .setHost(DEFAULT_HTTP_HOST)
+        .setPort(DEFAULT_HTTP_PORT)
+        .setURI(path)
+        .addSubProtocol(subProtocol);
+      Handler<AsyncResult<WebSocket>> handler;
+      if (declineSubprotocol) {
+        handler = onFailure(err -> {
           testComplete();
         });
-      }));
+      } else {
+        handler = onSuccess(ws -> {
+          MultiMap headers = ws.headers();
+          if (declineExtension) {
+            assertFalse(headers.contains("sec-websocket-extensions"));
+          } else {
+            assertTrue(headers.contains("sec-websocket-extensions", extension, true));
+          }
+          assertTrue(headers.contains("sec-websocket-protocol", subProtocol, true));
+          ws.handler(buff -> {
+            assertEquals(message, buff.toString("UTF-8"));
+            testComplete();
+          });
+        });
+      }
+      client.connect(connectOptions).onComplete(handler);
     });
+
     await();
   }
 
   @Test
   public void testSharedServersRoundRobin() throws Exception {
-
     int numServers = VertxOptions.DEFAULT_EVENT_LOOP_POOL_SIZE / 2- 1;
     int numConnections = numServers * 100;
 
@@ -626,7 +692,7 @@ public class WebSocketTest extends VertxTestBase {
   }
 
 
-  private Future<NetSocket> getUpgradedNetSocket(HttpServerRequest req, String path) {
+  private Future<NetSocket> getUpgradedNetSocket(HttpServerRequest req, String path, Map<String, String> extraResponseHeaders) {
     assertEquals(path, req.path());
     assertEquals("upgrade", req.headers().get("Connection"));
     String secHeader = req.headers().get("Sec-WebSocket-Key");
@@ -638,10 +704,13 @@ public class WebSocketTest extends VertxTestBase {
     headers.set("upgrade", "WebSocket");
     headers.set("connection", "upgrade");
     headers.set("sec-websocket-accept", encoded);
+    if (extraResponseHeaders != null) {
+      headers.addAll(extraResponseHeaders);
+    }
     return req.toNetSocket();
   }
 
-  private void testWSWriteStream(WebsocketVersion version) throws Exception {
+  private void testWSWriteStream(WebSocketVersion version) throws Exception {
 
     String scheme = "http";
     String path = "/some/path";
@@ -692,14 +761,14 @@ public class WebSocketTest extends VertxTestBase {
     await();
   }
 
-  private void testWSFrames(boolean binary, WebsocketVersion version) throws Exception {
+  private void testWSFrames(boolean binary, WebSocketVersion version) throws Exception {
     String scheme = "http";
     String path = "/some/path";
     String query = "handshake=bar&wibble=eek";
     String uri = path + "?" + query;
 
     // version 0 doesn't support continuations so we just send 1 frame per message
-    int frames = version == WebsocketVersion.V00 ? 1: 10;
+    int frames = version == WebSocketVersion.V00 ? 1: 10;
 
     server = vertx.createHttpServer(new HttpServerOptions().setPort(DEFAULT_HTTP_PORT)).webSocketHandler(ws -> {
       assertEquals(DEFAULT_HTTP_HOST, ws.authority().host());
@@ -761,7 +830,7 @@ public class WebSocketTest extends VertxTestBase {
 
       MultiMap headers = ws.headers();
       String webSocketLocation = headers.get("sec-websocket-location"); // HERE
-      if (version == WebsocketVersion.V00) {
+      if (version == WebSocketVersion.V00) {
         assertEquals("ws://" + DEFAULT_HTTP_HOST_AND_PORT + uri, webSocketLocation);
       } else {
         assertNull(webSocketLocation);
@@ -885,13 +954,13 @@ public class WebSocketTest extends VertxTestBase {
     await();
   }
 
-  private void testContinuationWriteFromConnectHandler(WebsocketVersion version) throws Exception {
+  private void testContinuationWriteFromConnectHandler(WebSocketVersion version) throws Exception {
     String path = "/some/path";
     String firstFrame = "AAA";
     String continuationFrame = "BBB";
 
     server = vertx.createHttpServer(new HttpServerOptions().setPort(DEFAULT_HTTP_PORT)).requestHandler(req -> {
-      getUpgradedNetSocket(req, path).onComplete(onSuccess(sock -> {
+      getUpgradedNetSocket(req, path, null).onComplete(onSuccess(sock -> {
         // Let's write a Text frame raw
         Buffer buff = Buffer.buffer();
         buff.appendByte((byte) 0x01); // Incomplete Text frame
@@ -935,7 +1004,7 @@ public class WebSocketTest extends VertxTestBase {
     await();
   }
 
-  private void testWriteFromConnectHandler(WebsocketVersion version) throws Exception {
+  private void testWriteFromConnectHandler(WebSocketVersion version) throws Exception {
 
     String path = "/some/path";
     Buffer buff = Buffer.buffer("AAA");
@@ -1013,7 +1082,7 @@ public class WebSocketTest extends VertxTestBase {
     // client needs to ask for it
     server = vertx.createHttpServer(new HttpServerOptions().setPort(DEFAULT_HTTP_PORT)).webSocketHandler(ws -> {
       assertEquals("upgrade", ws.headers().get("Connection"));
-      assertEquals("permessage-deflate;client_max_window_bits", ws.headers().get("sec-websocket-extensions"));
+      assertEquals("permessage-deflate", ws.headers().get("sec-websocket-extensions"));
       ws.writeFrame(io.vertx.core.http.WebSocketFrame.binaryFrame(buff, true));
     });
 
@@ -1042,7 +1111,7 @@ public class WebSocketTest extends VertxTestBase {
   public void testWSPermessageDeflateCompressionEnabled() throws InterruptedException {
     waitFor(2);
     HttpClient client = vertx.createHttpClient(new PoolOptions().setHttp1MaxSize(1));
-    server = vertx.createHttpServer(new HttpServerOptions().setPort(DEFAULT_HTTP_PORT)).webSocketHandler(ws -> {
+    server = vertx.createHttpServer(new HttpServerOptions().setPort(DEFAULT_HTTP_PORT).setWebSocketClosingTimeout(0)).webSocketHandler(ws -> {
       assertEquals("upgrade", ws.headers().get("Connection"));
       assertEquals("permessage-deflate", ws.headers().get("sec-websocket-extensions"));
       complete();
@@ -1101,15 +1170,13 @@ public class WebSocketTest extends VertxTestBase {
     await();
   }
 
-  private void testValidSubProtocol(WebsocketVersion version) throws Exception {
+  private void testValidSubProtocol(WebSocketVersion version) throws Exception {
     String path = "/some/path";
     List<String> clientSubProtocols = Arrays.asList("clientproto", "commonproto");
     List<String> serverSubProtocols = Arrays.asList("serverproto", "commonproto");
     Buffer buff = Buffer.buffer("AAA");
     server = vertx.createHttpServer(new HttpServerOptions().setPort(DEFAULT_HTTP_PORT).setWebSocketSubProtocols(serverSubProtocols)).webSocketHandler(ws -> {
       assertEquals(path, ws.path());
-      assertNull(ws.subProtocol());
-      ws.accept();
       assertEquals("commonproto", ws.subProtocol());
       ws.writeFrame(io.vertx.core.http.WebSocketFrame.binaryFrame(buff, true));
     });
@@ -1138,7 +1205,7 @@ public class WebSocketTest extends VertxTestBase {
     await();
   }
 
-  private void testInvalidSubProtocol(WebsocketVersion version) throws Exception {
+  private void testInvalidSubProtocol(WebSocketVersion version) throws Exception {
     String path = "/some/path";
     String subProtocol = "myprotocol";
     server = vertx.createHttpServer(new HttpServerOptions().setPort(DEFAULT_HTTP_PORT).addWebSocketSubProtocol("invalid")).webSocketHandler(ws -> {
@@ -1332,11 +1399,13 @@ public class WebSocketTest extends VertxTestBase {
     }));
   }
 
-  private void testReject(WebsocketVersion version, Integer rejectionStatus, int expectedRejectionStatus, String expectedBody) throws Exception {
+  private void testReject(WebSocketVersion version, Integer rejectionStatus, int expectedRejectionStatus, String expectedBody) throws Exception {
 
     String path = "/some/path";
 
-    server = vertx.createHttpServer(new HttpServerOptions().setPort(DEFAULT_HTTP_PORT)).webSocketHandler(ws -> {
+    server = vertx.createHttpServer(new HttpServerOptions().setPort(DEFAULT_HTTP_PORT))
+      .webSocketHandler(ws -> {})
+      .webSocketHandshakeHandler(ws -> {
       assertEquals(path, ws.path());
       if (rejectionStatus != null) {
         ws.reject(rejectionStatus);
@@ -1367,24 +1436,14 @@ public class WebSocketTest extends VertxTestBase {
   @Test
   public void testAsyncAccept() throws InterruptedException {
     AtomicBoolean resolved = new AtomicBoolean();
-    server = vertx.createHttpServer(new HttpServerOptions().setPort(DEFAULT_HTTP_PORT)).webSocketHandler(ws -> {
-      Promise<Integer> promise = Promise.promise();
-      ws.setHandshake(promise.future());
-      try {
-        ws.accept();
-        fail();
-      } catch (IllegalStateException ignore) {
-        // Expected
-      }
-      try {
-        ws.writeTextMessage("hello");
-        fail();
-      } catch (IllegalStateException ignore) {
-        // Expected
-      }
+    server = vertx.createHttpServer(new HttpServerOptions().setPort(DEFAULT_HTTP_PORT))
+      .webSocketHandler(ws -> {
+
+      })
+      .webSocketHandshakeHandler(handshake -> {
       vertx.setTimer(500, id -> {
         resolved.set(true);
-        promise.complete(101);
+        handshake.accept();
       });
     });
     awaitFuture(server.listen());
@@ -1393,33 +1452,6 @@ public class WebSocketTest extends VertxTestBase {
       assertTrue(resolved.get());
       testComplete();
     }));
-    await();
-  }
-
-  @Test
-  public void testCloseAsyncPending() throws InterruptedException {
-    server = vertx.createHttpServer(new HttpServerOptions().setPort(DEFAULT_HTTP_PORT)).webSocketHandler(ws -> {
-      Promise<Integer> promise = Promise.promise();
-      Future<Integer> result = ws.setHandshake(promise.future());
-      try {
-        ws.close();
-        fail();
-      } catch (IllegalStateException expected) {
-      }
-      promise.complete(101);
-      ws.close();
-//      assertTrue(result.isComplete());
-//      assertEquals(101, (int)result.result());
-    });
-    awaitFuture(server.listen());
-    client = vertx.createWebSocketClient();
-    vertx.runOnContext(v1 -> {
-      client.connect(DEFAULT_HTTP_PORT, HttpTestBase.DEFAULT_HTTP_HOST, "/some/path").onComplete(onSuccess(ws -> {
-        ws.closeHandler(v2 -> {
-          testComplete();
-        });
-      }));
-    });
     await();
   }
 
@@ -1530,50 +1562,50 @@ public class WebSocketTest extends VertxTestBase {
 
   @Test
   public void testWriteMessageHybi00() throws InterruptedException {
-    testWriteMessage(256, WebsocketVersion.V00);
+    testWriteMessage(256, WebSocketVersion.V00);
   }
 
   @Test
   public void testWriteFragmentedMessage1Hybi00() throws InterruptedException {
-    testWriteMessage(65536 + 256, WebsocketVersion.V00);
+    testWriteMessage(65536 + 256, WebSocketVersion.V00);
   }
 
   @Test
   public void testWriteFragmentedMessage2Hybi00() throws InterruptedException {
-    testWriteMessage(65536 + 65536 + 256, WebsocketVersion.V00);
+    testWriteMessage(65536 + 65536 + 256, WebSocketVersion.V00);
   }
 
   @Test
   public void testWriteMessageHybi08() throws InterruptedException {
-    testWriteMessage(256, WebsocketVersion.V08);
+    testWriteMessage(256, WebSocketVersion.V08);
   }
 
   @Test
   public void testWriteFragmentedMessage1Hybi08() throws InterruptedException {
-    testWriteMessage(65536 + 256, WebsocketVersion.V08);
+    testWriteMessage(65536 + 256, WebSocketVersion.V08);
   }
 
   @Test
   public void testWriteFragmentedMessage2Hybi08() throws InterruptedException {
-    testWriteMessage(65536 + 65536 + 256, WebsocketVersion.V08);
+    testWriteMessage(65536 + 65536 + 256, WebSocketVersion.V08);
   }
 
   @Test
   public void testWriteMessageHybi17() throws InterruptedException {
-    testWriteMessage(256, WebsocketVersion.V13);
+    testWriteMessage(256, WebSocketVersion.V13);
   }
 
   @Test
   public void testWriteFragmentedMessage1Hybi17() throws InterruptedException {
-    testWriteMessage(65536 + 256, WebsocketVersion.V13);
+    testWriteMessage(65536 + 256, WebSocketVersion.V13);
   }
 
   @Test
   public void testWriteFragmentedMessage2Hybi17() throws InterruptedException {
-    testWriteMessage(65536 + 65536 + 256, WebsocketVersion.V13);
+    testWriteMessage(65536 + 65536 + 256, WebSocketVersion.V13);
   }
 
-  private void testWriteMessage(int size, WebsocketVersion version) throws InterruptedException {
+  private void testWriteMessage(int size, WebSocketVersion version) throws InterruptedException {
     client = vertx.createWebSocketClient();
     waitFor(2);
     String path = "/some/path";
@@ -1608,55 +1640,55 @@ public class WebSocketTest extends VertxTestBase {
   @Test
   public void testNonFragmentedTextMessage2Hybi00() throws InterruptedException {
       String messageToSend = randomAlphaString(256);
-      testWriteSingleTextMessage(messageToSend, WebsocketVersion.V00);
+      testWriteSingleTextMessage(messageToSend, WebSocketVersion.V00);
   }
 
   @Test
   public void testFragmentedTextMessage2Hybi07() throws InterruptedException {
     String messageToSend = randomAlphaString(65536 + 65536 + 256);
-    testWriteSingleTextMessage(messageToSend, WebsocketVersion.V07);
+    testWriteSingleTextMessage(messageToSend, WebSocketVersion.V07);
   }
 
   @Test
   public void testFragmentedTextMessage2Hybi08() throws InterruptedException {
     String messageToSend = randomAlphaString(65536 + 65536 + 256);
-    testWriteSingleTextMessage(messageToSend, WebsocketVersion.V08);
+    testWriteSingleTextMessage(messageToSend, WebSocketVersion.V08);
   }
 
   @Test
   public void testFragmentedTextMessage2Hybi13() throws InterruptedException {
     String messageToSend = randomAlphaString(65536 + 65536 + 256);
-    testWriteSingleTextMessage(messageToSend, WebsocketVersion.V13);
+    testWriteSingleTextMessage(messageToSend, WebSocketVersion.V13);
   }
 
   @Test
   public void testMaxLengthFragmentedTextMessage() throws InterruptedException {
     String messageToSend = randomAlphaString(HttpServerOptions.DEFAULT_MAX_WEBSOCKET_MESSAGE_SIZE);
-    testWriteSingleTextMessage(messageToSend, WebsocketVersion.V13);
+    testWriteSingleTextMessage(messageToSend, WebSocketVersion.V13);
   }
 
   @Test
   public void testFragmentedUnicodeTextMessage2Hybi07() throws InterruptedException {
     String messageToSend = TestUtils.randomUnicodeString(65536 + 256);
-    testWriteSingleTextMessage(messageToSend, WebsocketVersion.V07);
+    testWriteSingleTextMessage(messageToSend, WebSocketVersion.V07);
   }
 
   @Test
   public void testFragmentedUnicodeTextMessage2Hybi08() throws InterruptedException {
     String messageToSend = TestUtils.randomUnicodeString(65536 + 256);
-    testWriteSingleTextMessage(messageToSend, WebsocketVersion.V08);
+    testWriteSingleTextMessage(messageToSend, WebSocketVersion.V08);
   }
 
   @Test
   public void testFragmentedUnicodeTextMessage2Hybi13() throws InterruptedException {
     String messageToSend = TestUtils.randomUnicodeString(65536 + 256);
-    testWriteSingleTextMessage(messageToSend, WebsocketVersion.V13);
+    testWriteSingleTextMessage(messageToSend, WebSocketVersion.V13);
   }
 
   @Test
   public void testTooLargeMessage() throws InterruptedException {
     String messageToSend = randomAlphaString(WebSocketClientOptions.DEFAULT_MAX_MESSAGE_SIZE + 1);
-    SocketMessages socketMessages = testWriteTextMessages(Collections.singletonList(messageToSend), WebsocketVersion.V13);
+    SocketMessages socketMessages = testWriteTextMessages(Collections.singletonList(messageToSend), WebSocketVersion.V13);
     List<String> receivedMessages = socketMessages.getReceivedMessages();
     List<String> expectedMessages = Collections.emptyList();
     assertEquals("Should not have received any messages", expectedMessages, receivedMessages);
@@ -1674,13 +1706,13 @@ public class WebSocketTest extends VertxTestBase {
     String shortLastMessage = randomAlphaString(shortMessageLength);
     List<String> messagesToSend = Arrays.asList(shortFirstMessage, tooLongMiddleMessage, shortLastMessage);
 
-    SocketMessages socketMessages = testWriteTextMessages(messagesToSend, WebsocketVersion.V13);
+    SocketMessages socketMessages = testWriteTextMessages(messagesToSend, WebSocketVersion.V13);
     List<String> receivedMessages = socketMessages.getReceivedMessages();
     List<String> expectedMessages = Arrays.asList(shortFirstMessage, shortLastMessage);
     assertEquals("Incorrect received messages", expectedMessages, receivedMessages);
   }
 
-  private void testWriteSingleTextMessage(String messageToSend, WebsocketVersion version) throws InterruptedException {
+  private void testWriteSingleTextMessage(String messageToSend, WebSocketVersion version) throws InterruptedException {
     List<String> messagesToSend = Collections.singletonList(messageToSend);
     SocketMessages socketMessages = testWriteTextMessages(messagesToSend, version);
     assertEquals("Did not receive all messages", messagesToSend, socketMessages.getReceivedMessages());
@@ -1688,7 +1720,7 @@ public class WebSocketTest extends VertxTestBase {
     assertEquals("Should not have received any exceptions", expectedExceptions, socketMessages.getReceivedExceptions());
   }
 
-  private SocketMessages testWriteTextMessages(List<String> messagesToSend, WebsocketVersion version) throws InterruptedException {
+  private SocketMessages testWriteTextMessages(List<String> messagesToSend, WebSocketVersion version) throws InterruptedException {
     String path = "/some/path";
     server = vertx.createHttpServer(new HttpServerOptions().setPort(DEFAULT_HTTP_PORT)).webSocketHandler(ws -> {
       for (String messageToSend : messagesToSend) {
@@ -1736,15 +1768,13 @@ public class WebSocketTest extends VertxTestBase {
   }
 
   @Test
-  public void testHandshakeTimeout() throws Exception {
+  public void testHandshakeTimeoutFires() throws Exception {
     NetServer server = vertx.createNetServer()
       .connectHandler(so -> {
 
       })
       .listen(1234, DEFAULT_HTTP_HOST)
-      .toCompletionStage()
-      .toCompletableFuture()
-      .get(20, TimeUnit.SECONDS);
+      .await(20, TimeUnit.SECONDS);
     try {
       client = vertx.createWebSocketClient(new WebSocketClientOptions().setConnectTimeout(1000));
       WebSocketConnectOptions options = new WebSocketConnectOptions()
@@ -1760,6 +1790,32 @@ public class WebSocketTest extends VertxTestBase {
     } finally {
       server.close();
     }
+  }
+
+  @Test
+  public void testHandshakeTimeoutDoesNotFire() throws Exception {
+    server = vertx.createHttpServer()
+      .webSocketHandler(ws -> {
+
+    });
+    server
+      .listen(DEFAULT_HTTP_PORT, DEFAULT_HTTP_HOST)
+      .await();
+    client = vertx.createWebSocketClient(new WebSocketClientOptions().setConnectTimeout(1000));
+    WebSocketConnectOptions options = new WebSocketConnectOptions()
+      .setPort(DEFAULT_HTTP_PORT)
+      .setHost(DEFAULT_HTTP_HOST)
+      .setURI("/")
+      .setTimeout(1000);
+    client.connect(options).onComplete(onSuccess(ws -> {
+      AtomicBoolean closed = new AtomicBoolean();
+      ws.closeHandler(v -> closed.set(true));
+      vertx.setTimer(1100, id -> {
+        assertFalse(closed.get());
+        testComplete();
+      });
+    }));
+    await();
   }
 
   private void connectUntilWebSocketReject(WebSocketClient client, int count, Handler<AsyncResult<Void>> doneHandler) {
@@ -1845,7 +1901,6 @@ public class WebSocketTest extends VertxTestBase {
     await();
   }
 
-  @Ignore
   @Test
   public void testReceiveHttpResponseHeadersOnClient() throws InterruptedException {
     server = vertx.createHttpServer(new HttpServerOptions().setPort(DEFAULT_HTTP_PORT)).requestHandler(req -> {
@@ -1944,7 +1999,7 @@ public class WebSocketTest extends VertxTestBase {
     HttpClient client = vertx.createHttpClient();
     handshake(client, req -> {
       req.putHeader(HttpHeaders.CONTENT_LENGTH, "100");
-      req.sendHead().onComplete(onSuccess(v -> {
+      req.writeHead().onComplete(onSuccess(v -> {
         req.connection().close();
       }));
     });
@@ -2048,7 +2103,7 @@ public class WebSocketTest extends VertxTestBase {
   }
 
   private Future<NetSocket> handshakeWithCookie(HttpServerRequest req) {
-    return ((Http1xServerConnection)req.connection()).netSocket().compose(so -> {
+    return ((Http1ServerConnection)req.connection()).netSocket().compose(so -> {
       try {
         MessageDigest digest = MessageDigest.getInstance("SHA-1");
         byte[] inputBytes = (req.getHeader("Sec-WebSocket-Key") + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").getBytes();
@@ -2073,7 +2128,7 @@ public class WebSocketTest extends VertxTestBase {
   }
 
   private Future<NetSocket> handshake(HttpServerRequest req) {
-    return ((Http1xServerConnection)req.connection()).netSocket().flatMap(so -> {
+    return ((Http1ServerConnection)req.connection()).netSocket().flatMap(so -> {
       try {
         MessageDigest digest = MessageDigest.getInstance("SHA-1");
         byte[] inputBytes = (req.getHeader("Sec-WebSocket-Key") + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").getBytes();
@@ -2873,10 +2928,12 @@ public class WebSocketTest extends VertxTestBase {
     testServerWebSocketHandshakeWithNonPersistentConnection(HttpVersion.HTTP_1_1);
   }
 
-  private void testServerWebSocketHandshakeWithNonPersistentConnection(HttpVersion  version) {
+  private void testServerWebSocketHandshakeWithNonPersistentConnection(HttpVersion version) {
     server = vertx.createHttpServer();
+    AtomicBoolean webSocketClose = new AtomicBoolean();
     server.webSocketHandler(ws -> {
       ws.frameHandler(frame -> {
+        webSocketClose.set(true);
         ws.close();
       });
     });
@@ -2886,7 +2943,7 @@ public class WebSocketTest extends VertxTestBase {
         req.send().onComplete(onSuccess(resp -> {
           assertEquals(101, resp.statusCode());
           resp.endHandler(v -> {
-            Http1xClientConnection conn = (Http1xClientConnection) req.connection();
+            Http1ClientConnection conn = (Http1ClientConnection) req.connection();
             NetSocketInternal soi = conn.toNetSocket();
             soi.messageHandler(msg -> {
               if (msg instanceof CloseWebSocketFrame) {
@@ -2899,6 +2956,7 @@ public class WebSocketTest extends VertxTestBase {
             pipeline.remove("codec");
             Future<Void> pingSent = soi.writeMessage(new PingWebSocketFrame());
             soi.closeHandler(v2 -> {
+              assertTrue(webSocketClose.get());
               assertTrue(pingSent.succeeded());
               testComplete();
             });
@@ -2925,7 +2983,7 @@ public class WebSocketTest extends VertxTestBase {
       handshake(client, req -> {
         req.send().onComplete(onSuccess(resp -> {
           assertEquals(101, resp.statusCode());
-          Http1xClientConnection conn = (Http1xClientConnection) req.connection();
+          Http1ClientConnection conn = (Http1ClientConnection) req.connection();
           NetSocketInternal soi = conn.toNetSocket();
           ChannelPipeline pipeline = soi.channelHandlerContext().pipeline();
           pipeline.addBefore("handler", "encoder", new WebSocket13FrameEncoder(true));
@@ -3003,16 +3061,21 @@ public class WebSocketTest extends VertxTestBase {
 
   @Test
   public void testClientConnectionCloseTimeout() {
-    testClientConnectionCloseTimeout(1);
+    testClientConnectionCloseTimeout(1, true, 1000);
   }
 
   @Test
   public void testClientConnectionCloseImmediately() {
-    testClientConnectionCloseTimeout(0);
+    testClientConnectionCloseTimeout(0, true, 1000);
   }
 
-  public void testClientConnectionCloseTimeout(int timeout) {
-    waitFor(timeout > 0L ? 3 : 2);
+  @Test
+  public void testClientConnectionCloseTimeoutWithoutCloseFrame() {
+    testClientConnectionCloseTimeout(1, false, 1006);
+  }
+
+  public void testClientConnectionCloseTimeout(int timeout, boolean respondWithCloseFrame, int expectedStatusCode) {
+    waitFor(3);
     List<Object> received = Collections.synchronizedList(new ArrayList<>());
     server = vertx.createHttpServer();
     server.requestHandler(req -> {
@@ -3022,41 +3085,39 @@ public class WebSocketTest extends VertxTestBase {
         soi.channelHandlerContext().pipeline().addBefore("handler", "decoder", new WebSocket13FrameDecoder(true, false, 1000));
         soi.messageHandler(msg -> {
           received.add(msg);
-          if (msg instanceof CloseWebSocketFrame) {
+          if (msg instanceof CloseWebSocketFrame && respondWithCloseFrame) {
             CloseWebSocketFrame frame = (CloseWebSocketFrame) msg;
             soi.writeMessage(new CloseWebSocketFrame(frame.statusCode(), frame.reasonText()));
           }
         });
-        soi.closeHandler(v -> {
-          complete();
-        });
+        soi.closeHandler(v -> complete());
       }));
     });
-    server.listen(DEFAULT_HTTP_PORT, DEFAULT_HTTP_HOST).onComplete(onSuccess(v1 -> {
-      client = vertx.createWebSocketClient(new WebSocketClientOptions().setClosingTimeout(timeout));
-      client.connect(DEFAULT_HTTP_PORT, DEFAULT_HTTP_HOST, "/chat").onComplete(onSuccess(ws -> {
-        if (timeout > 0L) {
-          ws.endHandler(v -> {
-            complete();
-          });
-          ws.exceptionHandler(err -> fail());
+    server.listen(DEFAULT_HTTP_PORT, DEFAULT_HTTP_HOST).await();
+    client = vertx.createWebSocketClient(new WebSocketClientOptions().setClosingTimeout(timeout));
+    WebSocket ws = client.connect(DEFAULT_HTTP_PORT, DEFAULT_HTTP_HOST, "/chat").await();
+    ws.endHandler(v -> {
+      complete();
+    });
+    ws.exceptionHandler(err -> {
+      complete();
+    });
+    ws.closeHandler(v -> {
+      if (timeout > 0L) {
+        assertEquals(1, received.size());
+        Object msg = received.get(0);
+        try {
+          assertNotNull(ws.closeStatusCode());
+          assertEquals(expectedStatusCode, (short)ws.closeStatusCode());
+          assertEquals(msg.getClass(), CloseWebSocketFrame.class);
+        } finally {
+          ReferenceCountUtil.release(msg);
         }
-        ws.closeHandler(v -> {
-          if (timeout > 0L) {
-            assertEquals(1, received.size());
-            Object msg = received.get(0);
-            try {
-              assertEquals(msg.getClass(), CloseWebSocketFrame.class);
-            } finally {
-              ReferenceCountUtil.release(msg);
-            }
-          }
-          complete();
-        });
-        // Client sends a close frame but server will not close the TCP connection as expected
-        ws.close();
-      }));
-    }));
+      }
+      complete();
+    });
+    // Client sends a close frame but server will not close the TCP connection as expected
+    ws.close();
     await();
   }
 
@@ -3089,7 +3150,7 @@ public class WebSocketTest extends VertxTestBase {
     handshake(client, req -> {
       req.send().onComplete(onSuccess(resp -> {
         assertEquals(101, resp.statusCode());
-        Http1xClientConnection conn = (Http1xClientConnection) req.connection();
+        Http1ClientConnection conn = (Http1ClientConnection) req.connection();
         NetSocketInternal soi = conn.toNetSocket();
         soi.channelHandlerContext().pipeline().addBefore("handler", "encoder", new WebSocket13FrameEncoder(true));
         soi.channelHandlerContext().pipeline().addBefore("handler", "decoder", new WebSocket13FrameDecoder(false, false, 1000));
@@ -3153,7 +3214,7 @@ public class WebSocketTest extends VertxTestBase {
   @Test
   public void testReportProtocolViolationOnClient() throws InterruptedException {
     server = vertx.createHttpServer(new HttpServerOptions().setPort(DEFAULT_HTTP_PORT)).requestHandler(req -> {
-      getUpgradedNetSocket(req, "/some/path").onComplete(onSuccess(sock -> {
+      getUpgradedNetSocket(req, "/some/path", null).onComplete(onSuccess(sock -> {
         // Let's write an invalid frame
         Buffer buff = Buffer.buffer();
         buff.appendByte((byte)(0x8)).appendByte((byte)0); // Violates protocol with V13 (final control frame)
@@ -3165,7 +3226,7 @@ public class WebSocketTest extends VertxTestBase {
       .setPort(DEFAULT_HTTP_PORT)
       .setHost(DEFAULT_HTTP_HOST)
       .setURI("/some/path")
-      .setVersion(WebsocketVersion.V13);
+      .setVersion(WebSocketVersion.V13);
     client = vertx.createWebSocketClient();
     vertx.runOnContext(v1 -> {
       client.connect(options).onComplete(onSuccess(ws -> {
@@ -3507,20 +3568,22 @@ public class WebSocketTest extends VertxTestBase {
 
   @Test
   public void testWriteHandlerFailure() throws InterruptedException {
-    server = vertx.createHttpServer()
+    server = vertx.createHttpServer(new HttpServerOptions().setWebSocketClosingTimeout(0))
       .webSocketHandler(ServerWebSocket::pause);
     awaitFuture(server.listen(DEFAULT_HTTP_PORT));
     Buffer buffer = TestUtils.randomBuffer(1024);
     client = vertx.createWebSocketClient();
-    client.connect(DEFAULT_HTTP_PORT, DEFAULT_HTTP_HOST, "/someuri").onComplete(onSuccess(ws -> {
-      while (!ws.writeQueueFull()) {
-        ws.write(buffer);
-      }
-      ws.write(buffer).onComplete(onFailure(err -> {
-        testComplete();
+    vertx.runOnContext(v -> {
+      client.connect(DEFAULT_HTTP_PORT, DEFAULT_HTTP_HOST, "/someuri").onComplete(onSuccess(ws -> {
+        while (!ws.writeQueueFull()) {
+          ws.write(buffer);
+        }
+        ws.write(buffer).onComplete(onFailure(err -> {
+          testComplete();
+        }));
+        ((WebSocketInternal)ws).channelHandlerContext().close();
       }));
-      ((WebSocketInternal)ws).channelHandlerContext().close();
-    }));
+    });
     await();
   }
 
@@ -3615,50 +3678,50 @@ public class WebSocketTest extends VertxTestBase {
 
   @Test
   public void testSetOriginHeaderV13() throws InterruptedException {
-    testOriginHeader(WebsocketVersion.V13, true, "http://www.example.com", HttpHeaders.ORIGIN, "http://www.example.com");
+    testOriginHeader(WebSocketVersion.V13, true, "http://www.example.com", HttpHeaders.ORIGIN, "http://www.example.com");
   }
 
   @Test
   public void testEnableOriginHeaderV13() throws InterruptedException {
-    testOriginHeader(WebsocketVersion.V13, true, null, HttpHeaders.ORIGIN, "http://" + DEFAULT_HTTP_HOST_AND_PORT);
+    testOriginHeader(WebSocketVersion.V13, true, null, HttpHeaders.ORIGIN, "http://" + DEFAULT_HTTP_HOST_AND_PORT);
   }
 
   @Test
   public void testDisableOriginHeaderV13() throws InterruptedException {
-    testOriginHeader(WebsocketVersion.V13, false, null, HttpHeaders.ORIGIN, null);
+    testOriginHeader(WebSocketVersion.V13, false, null, HttpHeaders.ORIGIN, null);
   }
 
   @Test
   public void testSetOriginHeaderV08() throws InterruptedException {
-    testOriginHeader(WebsocketVersion.V08, true, "http://www.example.com", HttpHeaderNames.SEC_WEBSOCKET_ORIGIN, "http://www.example.com");
+    testOriginHeader(WebSocketVersion.V08, true, "http://www.example.com", HttpHeaderNames.SEC_WEBSOCKET_ORIGIN, "http://www.example.com");
   }
 
   @Test
   public void testEnableOriginHeaderV08() throws InterruptedException {
-    testOriginHeader(WebsocketVersion.V08, true, null, HttpHeaderNames.SEC_WEBSOCKET_ORIGIN, "http://" + DEFAULT_HTTP_HOST_AND_PORT);
+    testOriginHeader(WebSocketVersion.V08, true, null, HttpHeaderNames.SEC_WEBSOCKET_ORIGIN, "http://" + DEFAULT_HTTP_HOST_AND_PORT);
   }
 
   @Test
   public void testDisableOriginHeaderV08() throws InterruptedException {
-    testOriginHeader(WebsocketVersion.V08, false, null, HttpHeaderNames.SEC_WEBSOCKET_ORIGIN, null);
+    testOriginHeader(WebSocketVersion.V08, false, null, HttpHeaderNames.SEC_WEBSOCKET_ORIGIN, null);
   }
 
   @Test
   public void testSetOriginHeaderV07() throws InterruptedException {
-    testOriginHeader(WebsocketVersion.V07, true, "http://www.example.com", HttpHeaderNames.SEC_WEBSOCKET_ORIGIN, "http://www.example.com");
+    testOriginHeader(WebSocketVersion.V07, true, "http://www.example.com", HttpHeaderNames.SEC_WEBSOCKET_ORIGIN, "http://www.example.com");
   }
 
   @Test
   public void testEnableOriginHeaderV07() throws InterruptedException {
-    testOriginHeader(WebsocketVersion.V07, true, null, HttpHeaderNames.SEC_WEBSOCKET_ORIGIN, "http://" + DEFAULT_HTTP_HOST_AND_PORT);
+    testOriginHeader(WebSocketVersion.V07, true, null, HttpHeaderNames.SEC_WEBSOCKET_ORIGIN, "http://" + DEFAULT_HTTP_HOST_AND_PORT);
   }
 
   @Test
   public void testDisableOriginHeaderV07() throws InterruptedException {
-    testOriginHeader(WebsocketVersion.V07, false, null, HttpHeaderNames.SEC_WEBSOCKET_ORIGIN, null);
+    testOriginHeader(WebSocketVersion.V07, false, null, HttpHeaderNames.SEC_WEBSOCKET_ORIGIN, null);
   }
 
-  private void testOriginHeader(WebsocketVersion version, boolean allow, String origin, CharSequence header, String expected) throws InterruptedException {
+  private void testOriginHeader(WebSocketVersion version, boolean allow, String origin, CharSequence header, String expected) throws InterruptedException {
     server = vertx.createHttpServer(new HttpServerOptions().setPort(DEFAULT_HTTP_PORT).setHost(HttpTestBase.DEFAULT_HTTP_HOST));
     server.webSocketHandler(ws -> {
       if (expected != null) {
@@ -3892,9 +3955,21 @@ public class WebSocketTest extends VertxTestBase {
     long now = System.currentTimeMillis();
     AtomicInteger shutdown = new AtomicInteger();
     AtomicInteger closure = new AtomicInteger();
+    CountDownLatch latch1 = new CountDownLatch(1);
     server = vertx
       .createHttpServer()
       .webSocketHandler(ws -> {
+        WebSocketInternal impl = (WebSocketInternal) ws;
+        ChannelHandlerContext chctx = impl.channelHandlerContext();
+        chctx.pipeline().addBefore("handler", "test",  new ChannelOutboundHandlerAdapter() {
+          @Override
+          public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
+            if (msg instanceof CloseWebSocketFrame) {
+              latch1.countDown();
+            }
+            super.write(ctx, msg, promise);
+          }
+        });
         ws.handler(buff -> {
           ws.write(Buffer.buffer("pong"));
           ws.shutdownHandler(v -> {
@@ -3909,7 +3984,6 @@ public class WebSocketTest extends VertxTestBase {
       });
     awaitFuture(server.listen(DEFAULT_HTTP_PORT, DEFAULT_HTTP_HOST));
     client = vertx.createWebSocketClient();
-    CountDownLatch latch1 = new CountDownLatch(1);
     CountDownLatch latch2 = new CountDownLatch(1);
     AtomicReference<WebSocket> wsRef = new AtomicReference<>();
     vertx.deployVerticle(new AbstractVerticle() {
@@ -3938,7 +4012,6 @@ public class WebSocketTest extends VertxTestBase {
     long elapsed = System.currentTimeMillis() - now;
     assertTrue(elapsed >= 2000);
     assertTrue(elapsed < 4000);
-    latch1.countDown();
     assertWaitUntil(() -> shutdown.get() == 1);
     assertWaitUntil(() -> closure.get() == 1);
   }
@@ -3976,5 +4049,102 @@ public class WebSocketTest extends VertxTestBase {
         });
       }));
     await();
+  }
+
+  @Test
+  public void testServerShutdown() throws Exception {
+    waitFor(2);
+    long now = System.currentTimeMillis();
+    server = vertx
+      .createHttpServer()
+      .webSocketHandler(ws -> {
+        ws.closeHandler(v -> {
+          long d = System.currentTimeMillis() - now;
+          assertTrue(d <= 500);
+          complete();
+        });
+        ws.handler(buff -> {
+          ws.shutdown(10, TimeUnit.SECONDS);
+        });
+      });
+    awaitFuture(server.listen(DEFAULT_HTTP_PORT, DEFAULT_HTTP_HOST));
+    client = vertx.createWebSocketClient();
+    client.connect(DEFAULT_HTTP_PORT, DEFAULT_HTTP_HOST, "/")
+      .onComplete(onSuccess(ws -> {
+        ws.write(Buffer.buffer("ping"));
+        ws.closeHandler(v -> {
+          complete();
+        });
+      }));
+    await();
+  }
+
+  @Test
+  public void testCustomResponseHeadersBeforeUpgrade() throws InterruptedException {
+    String path = "/some/path";
+    String message = "here is some text data";
+    String headerKey = "custom";
+    String headerValue = "value";
+    server = vertx.createHttpServer(new HttpServerOptions().setPort(DEFAULT_HTTP_PORT)).requestHandler(req -> {
+      req.response().headers().set(headerKey, headerValue);
+      req.toWebSocket()
+        .onComplete(onSuccess(ws -> {
+          ws.writeFinalTextFrame(message);
+        }));
+    });
+    awaitFuture(server.listen(DEFAULT_HTTP_PORT, DEFAULT_HTTP_HOST));
+    client = vertx.createWebSocketClient();
+    client.connect(DEFAULT_HTTP_PORT, HttpTestBase.DEFAULT_HTTP_HOST, path)
+      .onComplete(onSuccess(ws -> {
+        assertTrue(ws.headers().contains(headerKey));
+        assertEquals(headerValue, ws.headers().get(headerKey));
+        ws.handler(buff -> {
+          assertEquals(message, buff.toString("UTF-8"));
+          testComplete();
+        });
+      }));
+    await();
+  }
+
+  @Test
+  public void testPoolShouldNotStarveOnConnectError() throws Exception {
+
+    server = vertx.createHttpServer();
+
+    CountDownLatch shutdownLatch = new CountDownLatch(1);
+    AtomicInteger accepted = new AtomicInteger();
+    server.webSocketHandler(ws -> {
+      ws.shutdownHandler(v -> shutdownLatch.countDown());
+      assertTrue(accepted.getAndIncrement() == 0);
+    });
+
+    server.listen(DEFAULT_HTTP_PORT, DEFAULT_HTTP_HOST).toCompletionStage().toCompletableFuture().get();
+
+    int maxConnections = 5;
+
+    client = vertx.createWebSocketClient(new WebSocketClientOptions()
+      .setMaxConnections(maxConnections)
+      .setConnectTimeout(4000));
+
+    Future<WebSocket> wsFut = client.connect(DEFAULT_HTTP_PORT, DEFAULT_HTTP_HOST, "/").andThen(onSuccess(v -> {
+    }));
+
+    // Finish handshake
+    wsFut.toCompletionStage().toCompletableFuture().get(10, TimeUnit.SECONDS);
+
+    // This test requires a server socket to respond for the first connection
+    // Subsequent connections need to fail (connect error)
+    server.shutdown(30, TimeUnit.SECONDS);
+    awaitLatch(shutdownLatch);
+
+    int num = maxConnections + 10;
+    CountDownLatch latch = new CountDownLatch(num);
+    for (int i = 0;i < num;i++) {
+      client.connect(DEFAULT_HTTP_PORT, DEFAULT_HTTP_HOST, "/").onComplete(ar -> {
+        latch.countDown();
+      });
+    }
+
+    awaitLatch(latch, 10, TimeUnit.SECONDS);
   }
 }

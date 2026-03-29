@@ -16,34 +16,29 @@ package io.vertx.core.spi.metrics;
  *
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
-public interface ClientMetrics<M, T, Req, Resp> extends Metrics {
+public interface ClientMetrics<M, Req, Resp> extends Metrics {
 
   /**
-   * Called when a connection is requested.
+   * Create a request metric instance.
+   *
+   * @return a newly created request metric
    */
-  default T enqueueRequest() {
+  default M init() {
     return null;
-  }
-
-  /**
-   * Called when a request for connection is satisfied.
-   */
-  default void dequeueRequest(T taskMetric) {
   }
 
   /**
    * Called when a client request begins. Vert.x will invoke {@link #requestEnd} when the request
    * has ended or {@link #requestReset} if the request/response has failed before.
    *
-   * <p>The request uri is an arbitrary URI that depends on the client, e.g an HTTP request uri,
+   * <p>The request uri is an arbitrary URI that depends on the client, e.g. an HTTP request uri,
    * a SQL query, etc...
    *
+   * @param requestMetric the request metric
    * @param uri an arbitrary uri
    * @param request the request object
-   * @return the request metric
    */
-  default M requestBegin(String uri, Req request) {
-    return null;
+  default void requestBegin(M requestMetric, String uri, Req request) {
   }
 
   /**
@@ -72,7 +67,6 @@ public interface ClientMetrics<M, T, Req, Resp> extends Metrics {
   default void responseBegin(M requestMetric, Resp response) {
   }
 
-
   /**
    * Called when the client request couldn't complete successfully, for instance the connection
    * was closed before the response was received.
@@ -96,5 +90,19 @@ public interface ClientMetrics<M, T, Req, Resp> extends Metrics {
    * @param bytesRead the number of bytes read or {@code -1} when it is not known
    */
   default void responseEnd(M requestMetric, long bytesRead) {
+  }
+
+  /**
+   * Called when a connection to the service is created, this can be called multiple times.
+   *
+   */
+  default void connected() {
+  }
+
+  /**
+   * Called when a connection to the service is closed.
+   *
+   */
+  default void disconnected() {
   }
 }

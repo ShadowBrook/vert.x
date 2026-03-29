@@ -1,0 +1,1082 @@
+/*
+ * Copyright (c) 2011-2025 Contributors to the Eclipse Foundation
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0, or the Apache License, Version 2.0
+ * which is available at https://www.apache.org/licenses/LICENSE-2.0.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
+ */
+package io.vertx.tests.net.quic;
+
+import io.netty.buffer.ByteBufUtil;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.socket.ChannelOutputShutdownException;
+import io.netty.handler.codec.quic.QuicClosedChannelException;
+import io.netty.handler.timeout.IdleStateEvent;
+import io.netty.util.NetUtil;
+import io.vertx.core.*;
+import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.ClientAuth;
+import io.vertx.core.internal.quic.QuicConnectionInternal;
+import io.vertx.core.internal.quic.QuicStreamInternal;
+import io.vertx.core.net.*;
+import io.vertx.test.core.VertxTestBase;
+import io.vertx.test.tls.Cert;
+import org.junit.Test;
+
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.net.ssl.KeyManagerFactory;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.security.KeyStore;
+import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public class QuicServerTest extends VertxTestBase {
+
+  public static final ServerSSLOptions SSL_OPTIONS = new ServerSSLOptions()
+    .setKeyCertOptions(Cert.SERVER_JKS.get())
+    .setApplicationLayerProtocols(List.of("test-protocol"));
+
+  private PfxOptions macKey;
+
+  @Override
+  public void setUp() throws Exception {
+
+    KeyGenerator keygen = KeyGenerator.getInstance("HmacSHA256");
+    SecretKey key = keygen.generateKey();
+    KeyStore keystore = KeyStore.getInstance("pkcs12");
+    keystore.load(null, null);
+    keystore.setKeyEntry("theKey", key, "secret".toCharArray(), null);
+    Path keystorePath = Files.createTempFile("keystore", ".p12");
+    try (OutputStream out = new FileOutputStream(keystorePath.toFile())) {
+      keystore.store(out, "secret".toCharArray());
+    }
+    macKey = new PfxOptions().setPath(keystorePath.toFile().getAbsolutePath()).setPassword("secret");
+
+    super.setUp();
+  }
+
+  @Test
+  public void testBind() {
+    QuicServer server = vertx.createQuicServer(SSL_OPTIONS);
+    SocketAddress addr = server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    assertEquals(9999, addr.port());
+    assertEquals("127.0.0.1", addr.host());
+    server.close().await();
+  }
+
+  @Test
+  public void testConnect() throws Exception {
+    testConnect(new QuicServerConfig(), 9999);
+  }
+
+  @Test
+  public void testConnectRandomPort() throws Exception {
+    testConnect(new QuicServerConfig(), 0);
+  }
+
+  private void testConnect(QuicServerConfig options, int port) throws Exception {
+    QuicServer server = vertx.createQuicServer(options, SSL_OPTIONS);
+    server.connectHandler(conn -> {
+      assertEquals("test-protocol", conn.applicationLayerProtocol());
+      QuicTransportParams params = conn.transportParams();
+      assertEquals(10000000L, params.initialMaxData());
+      assertEquals(1000000L, params.initialMaxStreamDataBidiLocal());
+      assertEquals(1000000L, params.initialMaxStreamDataBidiRemote());
+      assertEquals(1000000L, params.initialMaxStreamDataUni());
+      assertEquals(100L, params.initialMaxStreamsBidi());
+      assertEquals(100L, params.initialMaxStreamsUni());
+      assertEquals(5000L, params.maxIdleTimeout().toMillis());
+      // Does not seem to work
+//      assertTrue(params.disableActiveMigration());
+//      assertEquals(2L, params.maxAckDelay().toMillis());
+      conn.streamHandler(stream -> {
+        stream.handler(buff -> {
+          stream.write(buff);
+        });
+        stream.endHandler(v -> {
+          stream.end();
+        });
+      });
+    });
+    int actualPort = server.bind(SocketAddress.inetSocketAddress(port, "localhost")).await().port();
+    if (port == 0) {
+      assertTrue(actualPort > 0);
+    } else {
+      assertEquals(port, actualPort);
+    }
+    QuicTestClient client = new QuicTestClient();
+    try {
+      client = new QuicTestClient();
+      QuicTestClient.Connection connection = client.connect(new InetSocketAddress(NetUtil.LOCALHOST4, actualPort));
+      QuicTestClient.Stream stream = connection.newStream();
+      List<String> received = Collections.synchronizedList(new ArrayList<>());
+      stream.handler(data -> {
+        received.add(new String(data, StandardCharsets.UTF_8));
+      });
+      stream.create();
+      stream.write("Hello");
+      assertWaitUntil(() -> received.equals(List.of("Hello")));
+      stream.close();
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testClientConnectionClose() throws Exception {
+    QuicServer server = vertx.createQuicServer(SSL_OPTIONS);
+    AtomicInteger inflights = new AtomicInteger();
+    server.connectHandler(conn -> {
+      inflights.incrementAndGet();
+      conn.closeHandler(v -> {
+        assertEquals(3, conn.closePayload().getError());
+        assertEquals("done", conn.closePayload().getReason().toString());
+        inflights.decrementAndGet();
+      });
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    try {
+      client = new QuicTestClient();
+      QuicTestClient.Connection connection = client.connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+      assertWaitUntil(() -> inflights.get() == 1);
+      connection.close(3, "done".getBytes(StandardCharsets.UTF_8));
+      assertWaitUntil(() -> inflights.get() == 0);
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testServerConnectionClose() throws Exception {
+    QuicServer server = vertx.createQuicServer(SSL_OPTIONS);
+    AtomicInteger beforeClose = new AtomicInteger();
+    RuntimeException thrown = new RuntimeException();
+    List<Throwable> caught = Collections.synchronizedList(new ArrayList<>());
+    server.connectHandler(conn -> {
+      Context ctx = vertx.getOrCreateContext();
+      ctx.exceptionHandler(caught::add);
+      AtomicInteger streamClosed = new AtomicInteger();
+      ((QuicConnectionInternal)conn).graceHandler(v -> {
+        assertSame(ctx, Vertx.currentContext());
+        beforeClose.incrementAndGet();
+        assertEquals(0, streamClosed.get());
+        throw thrown;
+      });
+      conn.streamHandler(stream -> {
+        stream.handler(buff -> {
+          vertx.setTimer(1, id -> {
+            conn.close(new QuicConnectionClose().setError(3).setReason(Buffer.buffer("done")));
+          });
+        });
+        stream.closeHandler(v -> streamClosed.incrementAndGet());
+      });
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    try {
+      client = new QuicTestClient();
+      CountDownLatch closeLatch = new CountDownLatch(1);
+      QuicTestClient.Connection connection = client.connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+      connection.closeHandler(v -> closeLatch.countDown());
+      QuicTestClient.Stream stream = connection.newStream();
+      List<String> received = Collections.synchronizedList(new ArrayList<>());
+      stream.handler(data -> {
+        received.add(new String(data, StandardCharsets.UTF_8));
+      });
+      stream.create();
+      stream.write("ping");
+      assertTrue(closeLatch.await(10, TimeUnit.SECONDS));
+      assertEquals(3, connection.closeError());
+      assertEquals("done", new String(connection.closeReason()));
+      assertEquals(1, beforeClose.get());
+      assertEquals(List.of(thrown), caught);
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testServerCreatesStream() throws Exception {
+    QuicServerConfig options = new QuicServerConfig();
+    options.getTransportConfig().setInitialMaxStreamDataBidiLocal(1_048_576L);
+    QuicServer server = vertx.createQuicServer(options, SSL_OPTIONS);
+    server.connectHandler(conn -> {
+      conn.openStream().onComplete(onSuccess2(stream -> {
+        stream.write("ping");
+        stream.handler(buff -> {
+          assertEquals("pong", buff.toString());
+          testComplete();
+        });
+      }));
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    try {
+      QuicTestClient.Connection connection = client.connection();
+      connection.handler(stream -> {
+        stream.write("pong");
+      });
+      connection.connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+      await();
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testServerCreatesUniStream() throws Exception {
+    disableThreadChecks();
+    QuicServer server = vertx.createQuicServer(SSL_OPTIONS);
+    server.connectHandler(conn -> {
+      conn.openStream(false).onComplete(onSuccess2(stream -> {
+        assertFalse(stream.isBidirectional());
+        assertTrue(stream.isLocalCreated());
+        stream.write("ping");
+      }));
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    try {
+      QuicTestClient.Connection connection = client.connection();
+      connection.handler(stream -> {
+        stream.handler(data -> {
+          assertEquals("ping", new String(data, StandardCharsets.UTF_8));
+          testComplete();
+        });
+      });
+      connection.connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+      await();
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testClientCreatesUniStream() throws Exception {
+    QuicServerConfig config = new QuicServerConfig();
+    config.getTransportConfig()
+      .setInitialMaxStreamDataUni(1_048_576L)
+      .setInitialMaxStreamsUni(256);
+    QuicServer server = vertx.createQuicServer(config, SSL_OPTIONS);
+    server.connectHandler(conn -> {
+      conn.streamHandler(stream -> {
+        assertFalse(stream.isBidirectional());
+        assertFalse(stream.isLocalCreated());
+        Future<Void> f = stream.write("pong");
+        f.onComplete(onFailure(err -> {
+          testComplete();
+        }));
+      });
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    try {
+      QuicTestClient.Connection connection = client.connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+      connection.newStream().create(false).write("ping");
+      await();
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testShutdownServer() throws Exception {
+    testShutdownServer(Duration.ofSeconds(10));
+  }
+
+  @Test
+  public void testCloseServer() throws Exception {
+    testShutdownServer(Duration.ofSeconds(0));
+  }
+
+  private void testShutdownServer(Duration grace) throws Exception {
+    disableThreadChecks();
+    int numStreams = 5;
+    int numConnections = 2;
+    waitFor(numConnections * numStreams);
+    QuicServer server = vertx.createQuicServer(SSL_OPTIONS);
+    AtomicInteger connectionShutdown = new AtomicInteger();
+    AtomicInteger streamShutdown = new AtomicInteger();
+    AtomicInteger count = new AtomicInteger();
+    server.connectHandler(conn -> {
+      conn.shutdownHandler(timeout -> connectionShutdown.incrementAndGet());
+      conn.streamHandler(stream -> {
+        count.incrementAndGet();
+        stream.shutdownHandler(v -> {
+          streamShutdown.incrementAndGet();
+          if (!grace.isZero()) {
+            vertx.setTimer(100, id -> {
+              stream.close();
+            });
+          }
+        });
+      });
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    try {
+      List<QuicTestClient.Connection> connections = new ArrayList<>();
+      for (int  j = 0;j < numConnections;j++) {
+        QuicTestClient.Connection connection = client.connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+        connections.add(connection);
+        List<QuicTestClient.Stream> streams = new ArrayList<>();
+        for (int i = 0;i < numStreams;i++) {
+          QuicTestClient.Stream stream = connection.newStream();
+          streams.add(stream);
+          stream.closeHandler(() -> {
+            complete();
+          });
+          stream.create();
+          stream.write("ping");
+        }
+      }
+      assertWaitUntil(() -> count.get() == numConnections * numStreams);
+      server.shutdown(grace).await();
+      assertEquals(numConnections, connectionShutdown.get());
+      assertEquals(numConnections * numStreams, streamShutdown.get());
+      await();
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testClientReset() throws Exception {
+    waitFor(2);
+    disableThreadChecks();
+    QuicServer server = vertx.createQuicServer(SSL_OPTIONS);
+    server.connectHandler(conn -> {
+      conn.streamHandler(stream -> {
+        stream.resetHandler(code -> {
+          assertEquals(4L, (long)code);
+          stream.end();
+        });
+        stream.closeHandler(v -> {
+          complete();
+        });
+      });
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    try {
+      client = new QuicTestClient();
+      QuicTestClient.Connection connection = client.connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+      QuicTestClient.Stream stream = connection.newStream();
+      stream.create();
+      stream.write("ping");
+      Thread.sleep(100);
+      stream.closeHandler(() -> {
+        complete();
+      });
+      stream.reset(4);
+      await();
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testClientAbortReading() throws Exception {
+    waitFor(3);
+    disableThreadChecks();
+    QuicServer server = vertx.createQuicServer(SSL_OPTIONS);
+    AtomicReference<QuicStream> streamRef = new AtomicReference<>();
+    server.connectHandler(conn -> {
+      conn.streamHandler(stream -> {
+        streamRef.set(stream);
+        stream.handler(buff -> {
+          stream.write(buff);
+        });
+      });
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    try {
+      client = new QuicTestClient();
+      QuicTestClient.Connection connection = client.connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+      QuicTestClient.Stream stream = connection.newStream();
+      stream.create();
+      AtomicInteger received = new AtomicInteger();
+      stream.handler(buff -> received.addAndGet(buff.length));
+      stream.write("ping");
+      assertWaitUntil(() -> received.get() > 0);
+      stream.abort(10);
+      try {
+        QuicStream ref = streamRef.get();
+        long now = System.currentTimeMillis();
+        while (true) {
+          ref.write("test").await();
+          assert(System.currentTimeMillis() - now < 10_000);
+        }
+      } catch (Exception e) {
+        assertEquals(ChannelOutputShutdownException.class, e.getClass());
+        assertEquals("STOP_SENDING frame received", e.getMessage());
+      }
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testServerAbortReading() throws Exception {
+    waitFor(3);
+    disableThreadChecks();
+    QuicServer server = vertx.createQuicServer(SSL_OPTIONS);
+    Promise<Void> writeLatch = Promise.promise();
+    server.connectHandler(conn -> {
+      conn.streamHandler(stream -> {
+        stream.handler(buff -> {
+          stream
+            .abort(10)
+            .onComplete(writeLatch);
+        });
+      });
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    try {
+      client = new QuicTestClient();
+      QuicTestClient.Connection connection = client.connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+      QuicTestClient.Stream stream = connection.newStream();
+      stream.create();
+      stream.write("ping");
+      writeLatch.future().await();
+      int num = 10;
+      for (int i = 0;i < num;i++) {
+        try {
+          stream.streamChannel.writeAndFlush(Unpooled.copiedBuffer("test", StandardCharsets.UTF_8)).sync();
+          // Retry
+          assertTrue(i + 1 < num);
+          Thread.sleep(1);
+        } catch (Exception e) {
+          assertSame(ChannelOutputShutdownException.class, e.getClass());
+          assertEquals("STOP_SENDING frame received", e.getMessage());
+          break;
+        }
+      }
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testServerReset() throws Exception {
+    disableThreadChecks();
+    waitFor(2);
+    QuicServer server = vertx.createQuicServer(SSL_OPTIONS);
+    server.connectHandler(conn -> {
+      conn.streamHandler(stream -> {
+        stream.handler(buff -> {
+          stream.reset(4).onComplete(onSuccess2(v -> complete()));
+        });
+      });
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    try {
+      client = new QuicTestClient();
+      QuicTestClient.Connection connection = client.connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+      QuicTestClient.Stream stream = connection.newStream();
+      stream.resetHandler(code -> {
+        assertEquals(4, code);
+        complete();
+      });
+      stream.create();
+      stream.write("ping");
+      await();
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testServerResetHandler() throws Exception {
+    disableThreadChecks();
+    QuicServer server = vertx.createQuicServer(SSL_OPTIONS);
+    server.connectHandler(conn -> {
+      conn.streamHandler(stream -> {
+        stream.handler(buff -> {
+          stream.exceptionHandler(err -> {
+            fail();
+          });
+          stream.resetHandler(reset -> {
+            vertx.setTimer(20, id -> {
+              stream.end(Buffer.buffer("done"));
+            });
+          });
+        });
+      });
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    try {
+      client = new QuicTestClient();
+      QuicTestClient.Connection connection = client.connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+      QuicTestClient.Stream stream = connection.newStream();
+      stream.create();
+      Buffer out = Buffer.buffer();
+      stream.handler(out::appendBytes);
+      stream.closeHandler(() -> {
+        assertEquals("done", out.toString());
+        testComplete();
+      });
+      stream.write("ping");
+      Thread.sleep(100);
+      stream.reset(4);
+      await();
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testSendDatagram() throws Exception {
+    disableThreadChecks();
+    waitFor(2);
+    QuicServerConfig config = new QuicServerConfig();
+    config.getTransportConfig().setDatagramConfig(new QuicDatagramConfig().setEnabled(true));
+    QuicServer server = vertx.createQuicServer(config, SSL_OPTIONS);
+    server.connectHandler(conn -> {
+      conn.writeDatagram(Buffer.buffer("ping")).onComplete(onSuccess2(v -> {
+        complete();
+      }));
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    try {
+      client = new QuicTestClient();
+      client.connection().datagramHandler(datagram -> {
+        assertEquals("ping", new String(datagram));
+        complete();
+      }).connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+      await();
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testReceiveDatagram() throws Exception {
+    QuicServerConfig config = new QuicServerConfig();
+    config.getTransportConfig().setDatagramConfig(new QuicDatagramConfig().setEnabled(true));
+    QuicServer server = vertx.createQuicServer(config, SSL_OPTIONS);
+    server.connectHandler(conn -> {
+      conn.datagramHandler(dgram -> {
+        assertEquals("ping", dgram.toString());
+        testComplete();
+      });
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    try {
+      client = new QuicTestClient();
+      QuicTestClient.Connection connection = client.connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+      connection.writeDatagram("ping".getBytes(StandardCharsets.UTF_8));
+      await();
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testMaxIdleTimeout() throws Exception {
+    QuicServerConfig config = new QuicServerConfig();
+    config.getTransportConfig().setMaxIdleTimeout(Duration.ofMillis(1000));
+    QuicServer server = vertx.createQuicServer(config, SSL_OPTIONS);
+    server.connectHandler(conn -> {
+      long now = System.currentTimeMillis();
+      conn.closeHandler(v -> {
+        assertTrue(System.currentTimeMillis() - now >= 1000);
+        assertTrue(System.currentTimeMillis() - now < 2000);
+        testComplete();
+      });
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    try {
+      client = new QuicTestClient();
+      QuicTestClient.Connection connection = client.connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+      await();
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testInvalidPrivateKey() {
+    QuicServerConfig config = new QuicServerConfig()
+      .setClientAddressValidation(QuicClientAddressValidation.CRYPTO)
+      .setClientAddressValidationKey(macKey.copy().setPassword("incorrect"))
+      .setClientAddressValidationTimeWindow(Duration.ofSeconds(30));
+    QuicServer server = vertx.createQuicServer(config, SSL_OPTIONS);
+    server.connectHandler(conn -> {
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost"))
+      .onComplete(onFailure2(err -> {
+        assertTrue(err.getCause() instanceof java.security.UnrecoverableKeyException);
+      testComplete();
+    }));
+    await();
+  }
+
+  @Test
+  public void testInvalidKeyConf() {
+    QuicServerConfig config = new QuicServerConfig()
+      .setClientAddressValidation(QuicClientAddressValidation.CRYPTO)
+      .setClientAddressValidationKey(new KeyCertOptions() {
+      @Override
+      public KeyCertOptions copy() {
+        return this;
+      }
+
+      @Override
+      public KeyManagerFactory getKeyManagerFactory(Vertx vertx) throws Exception {
+        return null;
+      }
+
+      @Override
+      public Function<String, KeyManagerFactory> keyManagerFactoryMapper(Vertx vertx) throws Exception {
+        return null;
+      }
+    })
+      .setClientAddressValidationTimeWindow(Duration.ofSeconds(30));
+    QuicServer server = vertx.createQuicServer(config, SSL_OPTIONS);
+    server.connectHandler(conn -> {
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost"))
+      .onComplete(onFailure2(err -> {
+        assertTrue(err instanceof IllegalArgumentException);
+        testComplete();
+      }));
+    await();
+  }
+
+  @Test
+  public void testInvalidTokenTimeWindow() {
+    try {
+      new QuicServerConfig().setClientAddressValidationTimeWindow(null);
+      fail();
+    } catch (NullPointerException ignore) {
+    }
+    try {
+      new QuicServerConfig().setClientAddressValidationTimeWindow(Duration.ofMillis(-10));
+      fail();
+    } catch (IllegalArgumentException ignore) {
+    }
+  }
+
+  @Test
+  public void testValidateTokenWithMac() throws Exception {
+    testValidateToken(macKey);
+  }
+
+  @Test
+  public void testValidateTokenWithJksDigitalSignature() throws Exception {
+    testValidateToken(Cert.SERVER_JKS.get());
+  }
+
+  @Test
+  public void testValidateTokenWithPemDigitalSignature() throws Exception {
+    testValidateToken(Cert.SERVER_PEM.get());
+  }
+
+  private void testValidateToken(KeyCertOptions key) throws Exception {
+    QuicServer server = vertx.createQuicServer(new QuicServerConfig().setClientAddressValidationKey(key).setClientAddressValidationTimeWindow(Duration.ofSeconds(30)), SSL_OPTIONS);
+    AtomicInteger connections = new AtomicInteger();
+    server.connectHandler(conn -> {
+      connections.incrementAndGet();
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    AtomicReference<byte[]> tokenRef = new AtomicReference<>();
+    client.tokenHandler((token) -> tokenRef.set(ByteBufUtil.getBytes(token)));
+    try {
+      QuicTestClient.Connection connection = client.connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+      connection.close();
+      assertNotNull(tokenRef.get());
+      assertEquals(1, connections.get());
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testTokenExpiration() throws Exception {
+    QuicServerConfig config = new QuicServerConfig()
+      .setClientAddressValidation(QuicClientAddressValidation.CRYPTO)
+      .setClientAddressValidationKey(macKey)
+      .setClientAddressValidationTimeWindow(Duration.ofMillis(10));
+    QuicServer server = vertx.createQuicServer(config, SSL_OPTIONS);
+    AtomicInteger connections = new AtomicInteger();
+    server.connectHandler(conn -> {
+      connections.incrementAndGet();
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    AtomicBoolean executed = new AtomicBoolean();
+    client.tokenHandler((token) -> {
+      if (executed.compareAndSet(false, true)) {
+        try {
+          Thread.sleep(20);
+        } catch (InterruptedException e) {
+          throw new RuntimeException(e);
+        }
+      }
+    });
+    try {
+      QuicTestClient.Connection connection = client.connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+      fail();
+    } catch (QuicClosedChannelException ignore) {
+      assertEquals(0, connections.get());
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testInvalidToken() throws Exception {
+    QuicServerConfig config = new QuicServerConfig()
+      .setClientAddressValidation(QuicClientAddressValidation.CRYPTO)
+      .setClientAddressValidationKey(macKey)
+      .setClientAddressValidationTimeWindow(Duration.ofSeconds(30));
+    QuicServer server = vertx.createQuicServer(config, SSL_OPTIONS);
+    AtomicInteger connections = new AtomicInteger();
+    server.connectHandler(conn -> {
+      connections.incrementAndGet();
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    client.tokenHandler((token) -> token.setLong(0, 0L));
+    try {
+      QuicTestClient.Connection connection = client.connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+      fail();
+    } catch (QuicClosedChannelException ignore) {
+      assertEquals(0, connections.get());
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testKeyLogFile1() throws Exception {
+    File tmp = Files.createTempDirectory("vertx").toFile();
+    File keyLogFile = new File(tmp, "keylogfile.txt");
+    testKeyLogFile(keyLogFile);
+  }
+
+  @Test
+  public void testKeyLogFile2() throws Exception {
+    File keyLogFile = Files.createTempFile("vertx", ".txt").toFile();
+    assertTrue(keyLogFile.exists());
+    Files.writeString(keyLogFile.toPath(), "TEST LINE" + System.lineSeparator(), StandardOpenOption.APPEND);
+    List<String> entries = testKeyLogFile(keyLogFile);
+    assertTrue(entries.contains("TEST"));
+  }
+
+  private List<String> testKeyLogFile(File keyLogFile) throws Exception {
+    QuicServer server = vertx.createQuicServer(new QuicServerConfig().setKeyLogFile(keyLogFile.getAbsolutePath()), SSL_OPTIONS);
+    server.connectHandler(conn -> {
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    try {
+      client = new QuicTestClient();
+      QuicTestClient.Connection connection = client.connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+      connection.close();
+      Pattern pattern = Pattern.compile("([^ ]+).*");
+      List<String> entries = new ArrayList<>();
+      Files.readAllLines(keyLogFile.toPath()).forEach(line -> {
+        Matcher matcher = pattern.matcher(line);
+        assertTrue(matcher.matches());
+        entries.add(matcher.group(1));
+      });
+      assertTrue(entries.contains("CLIENT_HANDSHAKE_TRAFFIC_SECRET"));
+      assertTrue(entries.contains("SERVER_HANDSHAKE_TRAFFIC_SECRET"));
+      assertTrue(entries.contains("CLIENT_TRAFFIC_SECRET_0"));
+      assertTrue(entries.contains("SERVER_TRAFFIC_SECRET_0"));
+      assertTrue(entries.contains("EXPORTER_SECRET"));
+      return entries;
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testWriteWhenClosed() throws Exception {
+    testWriteWhenClosed(true);
+  }
+
+  @Test
+  public void testEndWhenClosed() throws Exception {
+    testWriteWhenClosed(false);
+  }
+
+  private void testWriteWhenClosed(boolean write) throws Exception {
+    disableThreadChecks();
+    QuicServer server = vertx.createQuicServer(SSL_OPTIONS);
+    server.connectHandler(conn -> {
+      conn.streamHandler(stream -> {
+        stream.closeHandler(v -> {
+          Future<Void> f;
+          if (write) {
+            f = stream.write("test");
+          } else {
+            f = stream.end();
+          }
+          f.onComplete(onFailure2(err -> {
+            testComplete();
+          }));
+        });
+        stream.handler(buff -> {
+          stream.close();
+        });
+      });
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    try {
+      client = new QuicTestClient();
+      QuicTestClient.Connection connection = client.connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+      QuicTestClient.Stream stream = connection.newStream();
+      stream.create();
+      stream.write("ping");
+      await();
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testRebind() {
+    Deployable deployable = ctx -> {
+      QuicServer server = vertx.createQuicServer(SSL_OPTIONS);
+      server.connectHandler(connection -> {
+
+      });
+      return server.bind(SocketAddress.inetSocketAddress(9999, "localhost"));
+    };
+    int num = 4;
+    for (int i = 0;i < num;i++) {
+      String id = vertx.deployVerticle(deployable).await();
+      vertx.undeploy(id).await();
+    }
+  }
+
+  @Test
+  public void testStreamIdleTimeout() throws Exception {
+    QuicServerConfig config = new QuicServerConfig()
+      .setIdleTimeout(Duration.ofMillis(100));
+    QuicServer server = vertx.createQuicServer(config, SSL_OPTIONS);
+    server.connectHandler(conn -> {
+      conn.streamHandler(stream -> {
+        long now = System.currentTimeMillis();
+        AtomicInteger idleEvents = new AtomicInteger();
+        ((QuicStreamInternal)stream).eventHandler(event -> {
+          if (event instanceof IdleStateEvent) {
+            idleEvents.incrementAndGet();
+          }
+        });
+        stream.closeHandler(v -> {
+          long delta = System.currentTimeMillis() - now;
+          assertTrue(delta >= 100);
+          assertTrue(delta <= 300);
+          assertEquals(1, idleEvents.get());
+          testComplete();
+        });
+      });
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    try {
+      client = new QuicTestClient();
+      QuicTestClient.Connection connection = client.connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+      QuicTestClient.Stream stream = connection.newStream().create();
+      stream.write("ping");
+      await();
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testStreamIdleHandler() throws Exception {
+    int numEvents = 10;
+    QuicServerConfig config = new QuicServerConfig()
+      .setIdleTimeout(Duration.ofMillis(100));
+    QuicServer server = vertx.createQuicServer(config, SSL_OPTIONS);
+    server.connectHandler(conn -> {
+      conn.streamHandler(stream -> {
+        long now = System.currentTimeMillis();
+        AtomicInteger count = new AtomicInteger();
+        ((QuicStreamInternal) stream).idleHandler(idle -> {
+          if (count.incrementAndGet() == numEvents) {
+            stream.close();
+          }
+        });
+        stream.closeHandler(v -> {
+          assertEquals(numEvents, count.get());
+          long delta = System.currentTimeMillis() - now;
+          assertTrue(delta >= 100L * numEvents);
+          assertTrue(delta <= 100L * (numEvents + 2));
+          testComplete();
+        });
+      });
+    });
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    try {
+      client = new QuicTestClient();
+      QuicTestClient.Connection connection = client.connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+      QuicTestClient.Stream stream = connection.newStream().create();
+      stream.write("ping");
+      await();
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testServerNameIndication() throws Exception {
+    QuicServer server = vertx.createQuicServer(SSL_OPTIONS.copy().setKeyCertOptions(Cert.SNI_JKS.get()));
+    AtomicReference<String> serverName = new AtomicReference<>();
+    server.connectHandler(conn -> {
+      serverName.set(conn.indicatedServerName());
+    });
+    int actualPort = server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await().port();
+    QuicTestClient client = new QuicTestClient();
+    try {
+      client = new QuicTestClient();
+      QuicTestClient.Connection connection = client.connection()
+        .serverName("host2.com")
+        .connect(new InetSocketAddress(NetUtil.LOCALHOST4, actualPort));
+      connection.close();
+      assertEquals("host2.com", serverName.get());
+    } finally {
+      client.close();
+      server.close().await();
+    }
+  }
+
+  @Test
+  public void testServerExceptionHandler() throws Exception {
+    QuicServer server = vertx.createQuicServer(SSL_OPTIONS.copy().setClientAuth(ClientAuth.REQUIRED));
+    server.connectHandler(conn -> {
+      fail();
+    });
+    AtomicReference<Throwable> exceptionCaught = new AtomicReference<>();
+    server.exceptionHandler(exceptionCaught::set);
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicTestClient client = new QuicTestClient();
+    try {
+      client = new QuicTestClient();
+      QuicTestClient.Connection connection = client.connect(new InetSocketAddress(NetUtil.LOCALHOST4, 9999));
+    } catch (Exception ignore) {
+    } finally {
+      client.close();
+      server.close().await();
+    }
+    assertWaitUntil(() -> exceptionCaught.get() != null);
+  }
+
+  /*  @Test
+  public void testSoReuse() throws Exception {
+
+    InetSocketAddress addr = new InetSocketAddress("localhost", 4000);
+
+    int num = 2;
+    List<AtomicInteger> received = new ArrayList<>();
+    for (int i = 0;i < num;i++) {
+      AtomicInteger r = new AtomicInteger();
+      received.add(r);
+      new Thread(() -> {
+        try {
+          byte[] buff = new byte[65535];
+          DatagramSocket socket = new DatagramSocket(null);
+          socket.setOption(StandardSocketOptions.SO_REUSEPORT, true);
+          socket.bind(addr);
+          while (true) {
+            DatagramPacket packet = new DatagramPacket(buff, buff.length);
+            socket.receive(packet);
+            r.incrementAndGet();
+          }
+        } catch (Exception e) {
+          e.printStackTrace(System.out);
+        }
+      }).start();
+    }
+
+    int count = 1;
+    AtomicInteger received1 = received.get(0);
+    AtomicInteger received2 = received.get(1);
+    final CountDownLatch latch = new CountDownLatch(count);
+    AtomicInteger sent = new AtomicInteger();
+    Runnable r = () -> {
+      try {
+        DatagramSocket socket = new DatagramSocket();
+        while (received1.get() == 0 || received2.get() == 0) {
+          final byte[] bytes = "data".getBytes();
+          socket.send(new java.net.DatagramPacket(bytes, 0, bytes.length, addr.getAddress(), addr.getPort()));
+          Thread.sleep(1);
+        }
+        socket.close();
+      } catch (Exception e) {
+        e.printStackTrace();
+      }
+      latch.countDown();
+    };
+
+    ExecutorService executor = Executors.newFixedThreadPool(count);
+    for (int i = 0 ; i < count; i++) {
+      executor.execute(r);
+    }
+
+    latch.await();
+    executor.shutdown();
+
+    System.out.println(received1.get());
+    System.out.println(received2.get());
+    System.out.println(sent.get());
+  }*/
+}

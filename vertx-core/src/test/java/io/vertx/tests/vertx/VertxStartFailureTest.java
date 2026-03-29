@@ -12,18 +12,15 @@
 package io.vertx.tests.vertx;
 
 import io.netty.channel.EventLoopGroup;
-import io.vertx.core.AsyncResult;
-import io.vertx.core.Promise;
-import io.vertx.core.Vertx;
-import io.vertx.core.VertxOptions;
-import io.vertx.core.impl.transports.JDKTransport;
+import io.vertx.core.*;
+import io.vertx.core.impl.transports.NioTransport;
 import io.vertx.core.internal.VertxBootstrap;
 import io.vertx.core.spi.cluster.ClusterManager;
 import io.vertx.core.spi.transport.Transport;
 import io.vertx.core.spi.cluster.NodeListener;
 import io.vertx.test.core.AsyncTestBase;
 import io.vertx.test.fakecluster.FakeClusterManager;
-import io.vertx.test.fakedns.FakeDNSServer;
+import io.vertx.test.fakedns.MockDnsServer;
 import org.junit.Test;
 
 import java.net.InetSocketAddress;
@@ -42,7 +39,7 @@ public class VertxStartFailureTest extends AsyncTestBase {
 
   @Test
   public void testEventBusStartFailure() throws Exception {
-    FakeDNSServer dnsServer = new FakeDNSServer().testResolveASameServer("127.0.0.1");
+    MockDnsServer dnsServer = new MockDnsServer().testResolveASameServer("127.0.0.1");
     dnsServer.start();
     try {
       InetSocketAddress dnsServerAddress = dnsServer.localAddress();
@@ -65,7 +62,7 @@ public class VertxStartFailureTest extends AsyncTestBase {
     Exception expected = new Exception();
     FakeClusterManager clusterManager = new FakeClusterManager() {
       @Override
-      public void join(Promise<Void> promise) {
+      public void join(Completable<Void> promise) {
         promise.fail(expected);
       }
     };
@@ -107,7 +104,7 @@ public class VertxStartFailureTest extends AsyncTestBase {
   private Throwable failStart(VertxOptions options, ClusterManager clusterManager) throws Exception {
     List<EventLoopGroup> loops = new ArrayList<>();
     CountDownLatch latch = new CountDownLatch(1);
-    Transport transport = new JDKTransport() {
+    Transport transport = new NioTransport() {
       @Override
       public EventLoopGroup eventLoopGroup(int type, int nThreads, ThreadFactory threadFactory, int ioRatio) {
         EventLoopGroup eventLoop = super.eventLoopGroup(type, nThreads, threadFactory, ioRatio);

@@ -12,6 +12,8 @@
 package io.vertx.core.impl;
 
 import io.netty.util.internal.PlatformDependent;
+import io.vertx.core.net.HostAndPort;
+import io.vertx.core.net.SocketAddress;
 
 /**
  * Simple generic utility methods and constants
@@ -25,28 +27,47 @@ public class Utils {
 
   private static final boolean isLinux;
   private static final boolean isWindows;
+  private static final boolean isOsx;
 
   static {
     isLinux = "linux".equals(PlatformDependent.normalizedOs());
     isWindows = PlatformDependent.isWindows();
+    isOsx = PlatformDependent.isOsx();
   }
 
   /**
-   * @return true, if running on Linux
+   * @return {@code true}, if running on Linux
    */
   public static boolean isLinux() {
     return isLinux;
   }
 
   /**
-   * @return true, if running on Windows
+   * @return {@code true}, if running on Windows
    */
   public static boolean isWindows() {
     return isWindows;
   }
 
+  /**
+   * @return {@code true}, if running on Mac
+   */
+  public static boolean isOsx() {
+    return isOsx;
+  }
+
   @SuppressWarnings("unchecked")
   public static <E extends Throwable> void throwAsUnchecked(Throwable t) throws E {
     throw (E) t;
+  }
+
+  public static HostAndPort peerAddress(SocketAddress remoteAddress, String peerHost, Integer peerPort) {
+    if (peerHost == null) {
+      peerHost = remoteAddress.host();;
+    }
+    if (peerPort == null) {
+      peerPort = remoteAddress.port();
+    }
+    return HostAndPort.create(peerHost, peerPort);
   }
 }

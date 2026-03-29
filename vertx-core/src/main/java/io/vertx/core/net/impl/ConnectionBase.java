@@ -13,12 +13,13 @@ package io.vertx.core.net.impl;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
+import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.traffic.AbstractTrafficShapingHandler;
 import io.netty.util.AttributeKey;
-import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.FutureListener;
 import io.vertx.core.*;
+import io.vertx.core.buffer.Buffer;
 import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.internal.PromiseInternal;
 import io.vertx.core.internal.VertxInternal;
@@ -28,15 +29,12 @@ import io.vertx.core.internal.net.NetSocketInternal;
 import io.vertx.core.internal.net.SslHandshakeCompletionHandler;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.core.spi.metrics.NetworkMetrics;
-import io.vertx.core.spi.metrics.TCPMetrics;
+import io.vertx.core.spi.metrics.TransportMetrics;
 
-import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLSession;
 import java.net.InetSocketAddress;
-import java.security.cert.Certificate;
-import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
+import java.util.Map;
 
 /**
  * Abstract base class for connections managed by a vertx instance. This base implementation does not handle
@@ -58,10 +56,13 @@ public abstract class ConnectionBase {
   public static final VertxException CLOSED_EXCEPTION = NetSocketInternal.CLOSED_EXCEPTION;
   public static final AttributeKey<SocketAddress> REMOTE_ADDRESS_OVERRIDE = AttributeKey.valueOf("RemoteAddressOverride");
   public static final AttributeKey<SocketAddress> LOCAL_ADDRESS_OVERRIDE = AttributeKey.valueOf("LocalAddressOverride");
+  public static final AttributeKey<List<Map.Entry<Buffer, Buffer>>> PROXY_PROTOCOL_V2_HEADER_TLVS = AttributeKey.valueOf("proxyProtocolV2HeaderTLVs");
   private static final Logger log = LoggerFactory.getLogger(ConnectionBase.class);
 
   protected final VertxInternal vertx;
   protected final ChannelHandlerContext chctx;
+
+  protected final Channel channel;
   protected final ContextInternal context;
   private Handler<Throwable> exceptionHandler;
   private Handler<Void> closeHandler;
@@ -74,10 +75,6 @@ public abstract class ConnectionBase {
   private long remainingBytesRead;
   private long remainingBytesWritten;
 
-  // State accessed exclusively from the event loop thread
-  private ChannelPromise closeInitiated;
-  private boolean closeFinished;
-
   protected ConnectionBase(ContextInternal context, ChannelHandlerContext chctx) {
 
     PromiseInternal<Void> f = context.promise();
@@ -88,6 +85,7 @@ public abstract class ConnectionBase {
 
     this.vertx = context.owner();
     this.chctx = chctx;
+    this.channel = chctx.channel();
     this.context = context;
     this.closeFuture = f;
   }
@@ -118,100 +116,11 @@ public abstract class ConnectionBase {
   /**
    * Close the connection
    */
-  public final Future<Void> close() {
-    return close((Object) null);
-  }
-
-  static class CloseChannelPromise extends DefaultChannelPromise {
-    final Object reason;
-    final long timeout;
-    final TimeUnit unit;
-    public CloseChannelPromise(Channel channel, Object reason, long timeout, TimeUnit unit) {
-      super(channel);
-      this.reason = reason;
-      this.timeout = timeout;
-      this.unit = unit;
-    }
-  }
-
-  /**
-   * Close the connection
-   */
-  public final Future<Void> close(Object reason) {
-    return close(reason, 0L, TimeUnit.SECONDS);
-  }
-
-  /**
-   * Close the connection
-   */
-  public final Future<Void> close(Object reason, long timeout, TimeUnit unit) {
-    EventExecutor exec = chctx.executor();
-    CloseChannelPromise promise = new CloseChannelPromise(chctx.channel(), reason, timeout, unit);
-    if (exec.inEventLoop()) {
-      close(promise);
-    } else {
-      exec.execute(() -> close(promise));
-    }
-    PromiseInternal<Void> p = context.promise();
-    promise.addListener(p);
-    return p.future();
-  }
-
-  private void close(CloseChannelPromise promise) {
-    chctx
-      .channel()
-      .close(promise);
-  }
-
-  final void handleClose(ChannelPromise promise) {
-    if (closeInitiated != null) {
-      long timeout;
-      Object closeReason;
-      if (promise instanceof CloseChannelPromise) {
-        timeout = ((CloseChannelPromise)promise).timeout;
-        closeReason = ((CloseChannelPromise)promise).reason;
-      } else {
-        timeout = 0L;
-        closeReason = null;
-      }
-      if (timeout == 0L && !closeFinished) {
-        closeFinished = true;
-        closeInitiated = promise;
-        handleClose(closeReason, promise);
-      } else {
-        chctx
-          .channel()
-          .closeFuture()
-          .addListener(future -> {
-            if (future.isSuccess()) {
-              promise.setSuccess();
-            } else {
-              promise.setFailure(future.cause());
-            }
-          });
-      }
-    } else {
-      closeInitiated = promise;
-      if (promise instanceof CloseChannelPromise) {
-        CloseChannelPromise closeChannelPromise = (CloseChannelPromise) promise;
-        handleClose(closeChannelPromise.reason, closeChannelPromise.timeout, closeChannelPromise.unit, promise);
-      } else {
-        handleClose(null, 0L, TimeUnit.SECONDS, promise);
-      }
-    }
-  }
-
-  void handleClose(Object reason, long timeout, TimeUnit unit, ChannelPromise promise) {
-    if (closeFinished) {
-      // Need to add too "promise" to closeInitiated promise to ensure proper report of the flow
-      return;
-    }
-    closeFinished = true;
-    handleClose(reason, promise);
-  }
-
-  protected void handleClose(Object reason, ChannelPromise promise) {
-    chctx.close(promise);
+  public Future<Void> close() {
+    PromiseInternal<Void> promise = context.promise();
+    ChannelFuture future = channel.close();
+    future.addListener(promise);
+    return promise.future();
   }
 
   public synchronized ConnectionBase closeHandler(Handler<Void> handler) {
@@ -228,14 +137,14 @@ public abstract class ConnectionBase {
    * @return the Netty channel - for internal usage only
    */
   public final Channel channel() {
-    return chctx.channel();
+    return channel;
   }
 
   public final ChannelHandlerContext channelHandlerContext() {
     return chctx;
   }
 
-  public final ContextInternal getContext() {
+  public final ContextInternal context() {
     return context;
   }
 
@@ -251,7 +160,7 @@ public abstract class ConnectionBase {
     return null;
   }
 
-  protected void handleException(Throwable t) {
+  protected boolean handleException(Throwable t) {
     NetworkMetrics metrics = metrics();
     if (metrics != null) {
       metrics.exceptionOccurred(metric, remoteAddress(), t);
@@ -271,6 +180,7 @@ public abstract class ConnectionBase {
         }
       }
     });
+    return true;
   }
 
   protected void handleClosed() {
@@ -278,8 +188,8 @@ public abstract class ConnectionBase {
     if (metrics != null) {
       flushBytesRead();
       flushBytesWritten();
-      if (metrics instanceof TCPMetrics) {
-        ((TCPMetrics) metrics).disconnected(metric(), remoteAddress());
+      if (metrics instanceof TransportMetrics<?>) {
+        ((TransportMetrics<Object>) metrics).disconnected(metric(), remoteAddress());
       }
     }
     context.execute(() -> {
@@ -408,29 +318,24 @@ public abstract class ConnectionBase {
     }
   }
 
-  public List<Certificate> peerCertificates() throws SSLPeerUnverifiedException {
-    SSLSession session = sslSession();
-    if (session != null) {
-      return Arrays.asList(session.getPeerCertificates());
-    } else {
-      return null;
-    }
-  }
-
   public String indicatedServerName() {
-    if (chctx.channel().hasAttr(SslHandshakeCompletionHandler.SERVER_NAME_ATTR)) {
-      return chctx.channel().attr(SslHandshakeCompletionHandler.SERVER_NAME_ATTR).get();
+    if (channel.hasAttr(SslHandshakeCompletionHandler.SERVER_NAME_ATTR)) {
+      return channel.attr(SslHandshakeCompletionHandler.SERVER_NAME_ATTR).get();
     } else {
       return null;
     }
   }
 
-  public ChannelPromise channelFuture() {
+  public ChannelPromise newChannelPromise() {
     return chctx.newPromise();
   }
 
+  public ChannelPromise newChannelPromise(Promise<Void> promise) {
+    return new DelegatingChannelPromise(promise, channel);
+  }
+
   public String remoteName() {
-    java.net.SocketAddress addr = chctx.channel().remoteAddress();
+    java.net.SocketAddress addr = channel.remoteAddress();
     if (addr instanceof InetSocketAddress) {
       // Use hostString that does not trigger a DNS resolution
       return ((InetSocketAddress)addr).getHostString();
@@ -438,14 +343,18 @@ public abstract class ConnectionBase {
     return null;
   }
 
-  private SocketAddress channelRemoteAddress() {
-    java.net.SocketAddress addr = chctx.channel().remoteAddress();
+  protected SocketAddress channelRemoteAddress() {
+    java.net.SocketAddress addr;
+    if (channel instanceof QuicChannel) {
+      addr = ((QuicChannel)channel).remoteSocketAddress();
+    } else {
+      addr = channel.remoteAddress();
+    }
     return addr != null ? vertx.transport().convert(addr) : null;
   }
 
   private SocketAddress socketAdressOverride(AttributeKey<SocketAddress> key) {
-    Channel ch = chctx.channel();
-    return ch.hasAttr(key) ? ch.attr(key).getAndSet(null) : null;
+    return channel.hasAttr(key) ? channel.attr(key).getAndSet(null) : null;
   }
 
   public SocketAddress remoteAddress() {
@@ -481,7 +390,12 @@ public abstract class ConnectionBase {
   }
 
   private SocketAddress channelLocalAddress() {
-    java.net.SocketAddress addr = chctx.channel().localAddress();
+    java.net.SocketAddress addr;
+    if (channel instanceof QuicChannel) {
+      addr = ((QuicChannel)channel).localSocketAddress();
+    } else {
+      addr = channel.localAddress();
+    }
     return addr != null ? vertx.transport().convert(addr) : null;
   }
 
@@ -515,6 +429,10 @@ public abstract class ConnectionBase {
     } else {
       return localAddress();
     }
+  }
+
+  public List<Map.Entry<Buffer, Buffer>> proxyProtocolV2HeaderTLVs() {
+    return channel.hasAttr(PROXY_PROTOCOL_V2_HEADER_TLVS) ? channel.attr(PROXY_PROTOCOL_V2_HEADER_TLVS).getAndSet(List.of()) : List.of();
   }
 
 }

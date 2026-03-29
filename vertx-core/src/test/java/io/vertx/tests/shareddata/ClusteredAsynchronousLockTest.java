@@ -30,19 +30,18 @@ import java.util.function.Consumer;
  */
 public class ClusteredAsynchronousLockTest extends AsynchronousLockTest {
 
-  @Override
-  protected ClusterManager getClusterManager() {
-    return new FakeClusterManager();
-  }
-
   protected final int numNodes = 3;
+  AtomicInteger pos = new AtomicInteger();
 
   public void setUp() throws Exception {
     super.setUp();
     startNodes(numNodes);
   }
 
-  AtomicInteger pos = new AtomicInteger();
+  @Override
+  protected ClusterManager getClusterManager() {
+    return new FakeClusterManager();
+  }
 
   @Override
   protected Vertx getVertx() {
@@ -109,7 +108,7 @@ public class ClusteredAsynchronousLockTest extends AsynchronousLockTest {
     testLockReleased(latch -> {
       VertxInternal vi = (VertxInternal) vertices[0];
       Promise<Void> promise = vi.getOrCreateContext().promise();
-      vi.getClusterManager().leave(promise);
+      vi.clusterManager().leave(promise);
       promise.future().onComplete(onSuccess(v -> {
         latch.countDown();
       }));
@@ -117,23 +116,14 @@ public class ClusteredAsynchronousLockTest extends AsynchronousLockTest {
   }
 
   private void testLockReleased(Consumer<CountDownLatch> action) throws Exception {
-    CountDownLatch lockAquiredLatch = new CountDownLatch(1);
-
-    vertices[0].sharedData().getLockWithTimeout("pimpo", getLockTimeout()).onComplete(onSuccess(lock -> {
-      vertices[1].sharedData().getLockWithTimeout("pimpo", getLockTimeout()).onComplete(onSuccess(lock2 -> {
-        // Eventually acquired after node1 goes down
-        testComplete();
-      }));
-      lockAquiredLatch.countDown();
-    }));
-
-    awaitLatch(lockAquiredLatch);
-
+    Lock lock = awaitFuture(vertices[0].sharedData().getLockWithTimeout("pimpo", getLockTimeout()));
+    Future<Lock> fut = vertices[1].sharedData().getLockWithTimeout("pimpo", getLockTimeout());
     CountDownLatch closeLatch = new CountDownLatch(1);
     action.accept(closeLatch);
     awaitLatch(closeLatch);
-
-    await();
+    // Eventually acquired after node1 goes down
+    Lock lock2 = awaitFuture(fut);
+    lock2.release();
   }
 
   protected long getLockTimeout() {

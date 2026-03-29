@@ -18,7 +18,7 @@ import io.netty.util.CharsetUtil;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.internal.buffer.BufferInternal;
 import io.vertx.core.impl.Arguments;
-import io.vertx.core.internal.buffer.VertxByteBufAllocator;
+import io.vertx.core.impl.buffer.VertxByteBufAllocator;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 
@@ -195,7 +195,7 @@ public class BufferImpl implements BufferInternal {
 
   private void checkUpperBound(int index, int size) {
     int length = buffer.writerIndex();
-    if ((index | length - (index + size)) < 0) {
+    if (index < 0 || index + size < 0 || index + size > length) {
       throw new IndexOutOfBoundsException(index + " + " + size + " > " + length);
     }
   }
@@ -528,7 +528,7 @@ public class BufferImpl implements BufferInternal {
   }
 
   public int length() {
-    return buffer.writerIndex();
+    return buffer.readableBytes();
   }
 
   public BufferImpl copy() {
@@ -546,7 +546,7 @@ public class BufferImpl implements BufferInternal {
   /**
    * @return the buffer as is
    */
-  public ByteBuf byteBuf() {
+  public ByteBuf unwrap() {
     return buffer;
   }
 

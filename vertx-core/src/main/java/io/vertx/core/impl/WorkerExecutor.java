@@ -10,12 +10,12 @@
  */
 package io.vertx.core.impl;
 
-import io.vertx.core.Vertx;
 import io.vertx.core.internal.ContextInternal;
+import io.vertx.core.internal.EventExecutor;
+import io.vertx.core.internal.WorkerPool;
 import io.vertx.core.spi.metrics.PoolMetrics;
 
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executor;
 
 /**
  * Execute events on a worker pool.
@@ -25,25 +25,27 @@ import java.util.concurrent.Executor;
 public class WorkerExecutor implements EventExecutor {
 
   public static io.vertx.core.impl.WorkerExecutor unwrapWorkerExecutor() {
-    ContextInternal ctx = (ContextInternal) Vertx.currentContext();
-    if (ctx != null) {
-      ctx = ctx.unwrap();
-      Executor executor = ctx.executor();
-      if (executor instanceof io.vertx.core.impl.WorkerExecutor) {
-        return (io.vertx.core.impl.WorkerExecutor) executor;
-      } else {
-        throw new IllegalStateException("Cannot be called on a Vert.x event-loop thread");
-      }
+    Thread thread = Thread.currentThread();
+    if (thread instanceof VertxThread) {
+      VertxThread vertxThread = (VertxThread) thread;
+      String msg = vertxThread.isWorker() ? "Cannot be called on a Vert.x worker thread" :
+        "Cannot be called on a Vert.x event-loop thread";
+      throw new IllegalStateException(msg);
     }
-    // Technically it works also for worker threads but we don't want to encourage this
-    throw new IllegalStateException("Not running from a Vert.x virtual thread");
+    ContextInternal ctx = VertxImpl.currentContext(thread);
+    if (ctx != null && ctx.inThread()) {
+      // It can only be a Vert.x virtual thread
+      return (io.vertx.core.impl.WorkerExecutor) ctx.executor();
+    } else {
+      return null;
+    }
   }
 
   private final WorkerPool workerPool;
-  private final TaskQueue orderedTasks;
+  private final WorkerTaskQueue orderedTasks;
   private final ThreadLocal<Boolean> inThread = new ThreadLocal<>();
 
-  public WorkerExecutor(WorkerPool workerPool, TaskQueue orderedTasks) {
+  public WorkerExecutor(WorkerPool workerPool, WorkerTaskQueue orderedTasks) {
     this.workerPool = workerPool;
     this.orderedTasks = orderedTasks;
   }
@@ -56,68 +58,62 @@ public class WorkerExecutor implements EventExecutor {
   @Override
   public void execute(Runnable command) {
     PoolMetrics metrics = workerPool.metrics();
-    Object queueMetric = metrics != null ? metrics.submitted() : null;
-    orderedTasks.execute(() -> {
-      Object execMetric = null;
-      if (metrics != null) {
-        execMetric = metrics.begin(queueMetric);
-      }
-      try {
+    Object queueMetric = metrics != null ? metrics.enqueue() : null;
+    // Todo : collapse WorkerTask with context submitted task object
+    WorkerTask task = new WorkerTask(metrics, queueMetric) {
+      @Override
+      protected void execute() {
         inThread.set(true);
         try {
           command.run();
         } finally {
           inThread.remove();
         }
-      } finally {
-        if (metrics != null) {
-          metrics.end(execMetric, true);
-        }
       }
-    }, workerPool.executor());
+    };
+    orderedTasks.execute(task, workerPool.executor());
+  }
+
+  WorkerTaskQueue taskQueue() {
+    return orderedTasks;
   }
 
   /**
-   * See {@link TaskQueue#current()}.
+   * Get the current execution of a task, so it can be suspended.
+   *
+   * @return the current task
    */
-  public TaskController current() {
+  public Execution currentExecution() {
     return orderedTasks.current();
   }
 
-  public interface TaskController {
+  public interface Execution {
 
     /**
-     * Resume the task, the {@code callback} will be executed when the task is resumed, before the task thread
-     * is unparked.
+     * Try to suspend the execution.
      *
-     * @param callback called when the task is resumed
+     * <ul>
+     *  <li>When the operation succeeds, any queued task will be executed and a latch is returned, this latch should
+     *  be used to park the thread until it can resume the task.</li>
+     *  <li>When the operation fails, {@code null} is returned, it means that the task was already resumed.</li>
+     * </ul>
+     *
+     * @return the latch to wait for until the current task can resume or {@code null}
      */
-    void resume(Runnable callback);
+    CountDownLatch trySuspend();
 
     /**
      * Like {@link #resume(Runnable)}.
      */
-    default void resume() {
-      resume(() -> {});
-    }
+    void resume();
 
     /**
-     * Suspend the task execution and park the current thread until the task is resumed.
-     * The next task in the queue will be executed, when there is one.
+     * Resume the task, the {@code callback} will be executed when the task is resumed, before the task thread
+     * is un-parked.
      *
-     * <p>When the task wants to be resumed, it should call {@link #resume}, this will be executed immediately if there
-     * is no other tasks being executed, otherwise it will be added first in the queue.
+     * @param callback called after the task is resumed
      */
-    default void suspendAndAwaitResume() throws InterruptedException {
-      suspend().await();
-    }
-
-    /**
-     * Like {@link #suspendAndAwaitResume()} but does not await the task to be resumed.
-     *
-     * @return the latch to await
-     */
-    CountDownLatch suspend();
+    void resume(Runnable callback);
 
   }
 }

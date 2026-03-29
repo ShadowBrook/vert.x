@@ -12,8 +12,6 @@
 package io.vertx.test.fakemetrics;
 
 import io.vertx.core.http.HttpClientRequest;
-import io.vertx.core.http.WebSocket;
-import io.vertx.core.http.WebSocketBase;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.core.spi.metrics.ClientMetrics;
 import io.vertx.core.spi.metrics.HttpClientMetrics;
@@ -29,33 +27,30 @@ import java.util.stream.Collectors;
 /**
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
-public class FakeHttpClientMetrics extends FakeTCPMetrics implements HttpClientMetrics<HttpClientMetric, WebSocketMetric, SocketMetric, Void> {
+public class FakeHttpClientMetrics extends FakeWebSocketMetrics implements HttpClientMetrics<HttpClientMetric, WebSocketMetric> {
 
   private final String name;
-  private final ConcurrentMap<WebSocketBase, WebSocketMetric> webSockets = new ConcurrentHashMap<>();
   private final ConcurrentMap<SocketAddress, EndpointMetric> endpoints = new ConcurrentHashMap<>();
 
   public FakeHttpClientMetrics(String name) {
     this.name = name;
   }
 
-  public WebSocketMetric getMetric(WebSocket ws) {
-    return webSockets.get(ws);
+  public String name() {
+    return name;
   }
 
   public HttpClientMetric getMetric(HttpClientRequest request) {
     for (EndpointMetric metric : endpoints.values()) {
       for (HttpRequest req : metric.requests.keySet()) {
-        if (req.id() == request.streamId()) {
+        if (req.uri().equals(request.getURI()) &&
+            req.remoteAddress().equals(request.connection().remoteAddress()) &&
+            req.method() == request.getMethod()) {
           return metric.requests.get(req);
         }
       }
     }
     return null;
-  }
-
-  public String getName() {
-    return name;
   }
 
   public Set<String> endpoints() {
@@ -71,10 +66,10 @@ public class FakeHttpClientMetrics extends FakeTCPMetrics implements HttpClientM
     return null;
   }
 
-  public Integer queueSize(String name) {
-    EndpointMetric server = endpoint(name);
-    return server != null ? server.queueSize.get() : null;
-  }
+//  public Integer queueSize(String name) {
+//    EndpointMetric server = endpoint(name);
+//    return server != null ? server.queueSize.get() : null;
+//  }
 
   public Integer connectionCount(String name) {
     EndpointMetric endpoint = endpoint(name);
@@ -82,7 +77,7 @@ public class FakeHttpClientMetrics extends FakeTCPMetrics implements HttpClientM
   }
 
   @Override
-  public ClientMetrics<HttpClientMetric, Void, HttpRequest, HttpResponse> createEndpointMetrics(SocketAddress remoteAddress, int maxPoolSize) {
+  public ClientMetrics<HttpClientMetric, HttpRequest, HttpResponse> createEndpointMetrics(SocketAddress remoteAddress, int maxPoolSize) {
     EndpointMetric metric = new EndpointMetric() {
       @Override
       public void close() {
@@ -92,27 +87,4 @@ public class FakeHttpClientMetrics extends FakeTCPMetrics implements HttpClientM
     endpoints.put(remoteAddress, metric);
     return metric;
   }
-
-  @Override
-  public void endpointConnected(ClientMetrics<HttpClientMetric, Void, ?, ?> endpointMetric) {
-    ((EndpointMetric)endpointMetric).connectionCount.incrementAndGet();
-  }
-
-  @Override
-  public void endpointDisconnected(ClientMetrics<HttpClientMetric, Void, ?, ?> endpointMetric) {
-    ((EndpointMetric)endpointMetric).connectionCount.decrementAndGet();
-  }
-
-  @Override
-  public WebSocketMetric connected(WebSocket webSocket) {
-    WebSocketMetric metric = new WebSocketMetric(webSocket);
-    webSockets.put(webSocket, metric);
-    return metric;
-  }
-
-  @Override
-  public void disconnected(WebSocketMetric webSocketMetric) {
-    webSockets.remove(webSocketMetric.ws);
-  }
-
 }

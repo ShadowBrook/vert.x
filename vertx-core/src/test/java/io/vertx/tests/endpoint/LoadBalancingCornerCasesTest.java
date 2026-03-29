@@ -6,10 +6,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.List;
+import java.util.*;
 
 import static org.junit.Assert.assertEquals;
 
@@ -33,13 +30,13 @@ public class LoadBalancingCornerCasesTest {
 
   @Test
   public void testCornerCases() {
-    List<EndpointNode> instances = new ArrayList<>();
-    EndpointSelector selector = loadBalancer.selector(instances);
+    List<ServerEndpoint> instances = new ArrayList<>();
+    ServerSelector selector = loadBalancer.selector(instances);
     // Randomness is involved in some policies.
     for (int i = 0; i < 1000; i++) {
       assertEquals(-1, selector.select());
     }
-    EndpointNode instance = new EndpointNode() {
+    ServerEndpoint instance = new ServerEndpoint() {
       InteractionMetrics<?> metrics = loadBalancer.newMetrics();
       @Override
       public SocketAddress address() {
@@ -47,6 +44,10 @@ public class LoadBalancingCornerCasesTest {
       }
       @Override
       public Object unwrap() {
+        return null;
+      }
+      @Override
+      public String protocolId() {
         return null;
       }
       @Override
@@ -58,7 +59,7 @@ public class LoadBalancingCornerCasesTest {
         return metrics;
       }
       @Override
-      public EndpointInteraction newInteraction() {
+      public ServerInteraction newInteraction() {
         return null;
       }
     };

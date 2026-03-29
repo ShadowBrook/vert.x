@@ -14,6 +14,7 @@ import io.netty.handler.ssl.ClientAuth;
 import io.netty.handler.ssl.SslContext;
 
 import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SNIServerName;
 import javax.net.ssl.SSLException;
 import javax.net.ssl.TrustManagerFactory;
 import java.util.List;
@@ -38,20 +39,24 @@ public interface SslContextFactory {
   }
 
   /**
-   * Configures the client auth
+   * Configure the factory to build for server
    * @param clientAuth the client auth to use
    * @return a reference to this, so the API can be used fluently
    */
-  default SslContextFactory clientAuth(ClientAuth clientAuth) {
+  default SslContextFactory forServer(ClientAuth clientAuth) {
     return this;
   }
 
   /**
-   * Set whether to build a context for clients or for servers
-   * @param forClient {@code true} for client otherwise for servers
+   * Configure the factory to build for client
+   * @param serverName the optional server name
    * @return a reference to this, so the API can be used fluently
    */
-  default SslContextFactory forClient(boolean forClient) {
+  default SslContextFactory forClient(SNIServerName serverName, String endpointIdentificationAlgorithm) {
+    return this;
+  }
+
+  default SslContextFactory enabledProtocols(Set<String> enabledProtocols) {
     return this;
   }
 
@@ -88,15 +93,6 @@ public interface SslContextFactory {
    * @return a reference to this, so the API can be used fluently
    */
   default SslContextFactory applicationProtocols(List<String> applicationProtocols) {
-    return this;
-  }
-
-  /**
-   * Set the SNI server name.
-   * @param serverName the server name
-   * @return a reference to this, so the API can be used fluently
-   */
-  default SslContextFactory serverName(String serverName) {
     return this;
   }
 

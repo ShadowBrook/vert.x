@@ -11,14 +11,21 @@
 
 package io.vertx.tests.json;
 
-import io.vertx.core.buffer.Buffer;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonTokenId;
+import io.vertx.core.json.DecodeException;
 import io.vertx.core.json.EncodeException;
+import io.vertx.core.json.JsonArray;
+import io.vertx.core.json.JsonObject;
 import io.vertx.core.json.jackson.JacksonCodec;
 import io.vertx.test.core.VertxTestBase;
+import org.junit.Assert;
 import org.junit.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
+import java.util.Arrays;
+import java.util.Map;
+
+import static com.fasterxml.jackson.core.StreamReadConstraints.*;
 
 /**
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
@@ -70,4 +77,127 @@ public class JacksonTest extends VertxTestBase {
     codec.toBuffer(new RuntimeException("Unsupported"));
   }
 
+  @Test
+  public void testDefaultConstraints() {
+    testReadConstraints(
+      DEFAULT_MAX_DEPTH,
+      DEFAULT_MAX_NUM_LEN,
+      DEFAULT_MAX_STRING_LEN,
+      DEFAULT_MAX_NAME_LEN,
+      DEFAULT_MAX_DOC_LEN);
+  }
+
+  public static void testReadConstraints(int defaultMaxDepth,
+                                         int maxNumberLength,
+                                         int defaultMaxStringLength,
+                                         int defaultMaxNameLength,
+                                         long defaultMaxDocumentLength) {
+    testMaxNestingDepth(defaultMaxDepth);
+    try {
+      testMaxNestingDepth(defaultMaxDepth + 1);
+      Assert.fail();
+    } catch (DecodeException expected) {
+    }
+    testMaxNumberLength(maxNumberLength);
+    try {
+      testMaxNumberLength(maxNumberLength + 1);
+      Assert.fail();
+    } catch (DecodeException expected) {
+    }
+
+    testMaxStringLength(defaultMaxStringLength);
+    try {
+      testMaxStringLength(defaultMaxStringLength + 1);
+      Assert.fail();
+    } catch (DecodeException expected) {
+    }
+
+    testMaxNameLength(defaultMaxNameLength);
+    try {
+      testMaxNameLength(defaultMaxNameLength + 1);
+      Assert.fail();
+    } catch (DecodeException expected) {
+    }
+
+    if (defaultMaxDocumentLength >= 0) {
+      testMaxDocumentLength(defaultMaxDocumentLength);
+      try {
+        testMaxDocumentLength(defaultMaxDocumentLength + 1);
+        Assert.fail();
+      } catch (DecodeException expected) {
+      }
+    }
+  }
+
+  private static JsonArray testMaxNestingDepth(int depth) {
+    String json = "[".repeat(depth) + "]".repeat(depth);
+    return new JsonArray(json);
+  }
+
+  private static JsonObject testMaxNumberLength(int len) {
+    String json = "{\"number\":" + "1".repeat(len) + "}";
+    return new JsonObject(json);
+  }
+
+  private static JsonObject testMaxStringLength(int len) {
+    String json = "{\"string\":\"" + "a".repeat(len) + "\"}";
+    return new JsonObject(json);
+  }
+
+  private static JsonObject testMaxNameLength(int len) {
+    String json = "{\"" + "a".repeat(len) + "\":3}";
+    return new JsonObject(json);
+  }
+
+  private static JsonArray testMaxDocumentLength(long len) {
+    String prefix = len % 2 == 0 ? "[ " : "[";
+    int num = (int) ((len - prefix.length()) / 2);
+    StringBuilder sb = new StringBuilder((int) len);
+    sb.append(prefix);
+    for (int i = 0; i < num;i++) {
+      sb.append("0,");
+    }
+    sb.setCharAt((int) (len - 1), ']');
+    String json = sb.toString();
+    return new JsonArray(json);
+  }
+
+  @Test
+  public void testParseMap() throws Exception {
+    JsonParser parser = JacksonCodec.createParser("{\"nested\":{\"key\":\"value\"},\"another\":4}");
+    assertEquals(JsonTokenId.ID_START_OBJECT, parser.nextToken().id());
+    assertEquals(JsonTokenId.ID_FIELD_NAME, parser.nextToken().id());
+    assertEquals(JsonTokenId.ID_START_OBJECT, parser.nextToken().id());
+    Map<String, Object> nested = JacksonCodec.parseObject(parser);
+    assertEquals(Map.of("key", "value"), nested);
+    assertEquals(JsonTokenId.ID_FIELD_NAME, parser.nextToken().id());
+    assertEquals(JsonTokenId.ID_NUMBER_INT, parser.nextToken().id());
+    assertEquals(JsonTokenId.ID_END_OBJECT, parser.nextToken().id());
+  }
+
+  @Test
+  public void testParseAny() throws Exception {
+    JsonParser parser = JacksonCodec.createParser("{\"nested\":{\"key\":\"value\"},\"another\":4}");
+    assertEquals(JsonTokenId.ID_START_OBJECT, parser.nextToken().id());
+    assertEquals(JsonTokenId.ID_FIELD_NAME, parser.nextToken().id());
+    assertEquals(JsonTokenId.ID_START_OBJECT, parser.nextToken().id());
+    Object nested = JacksonCodec.parseValue(parser);
+    assertEquals(Map.of("key", "value"), nested);
+    assertEquals(JsonTokenId.ID_FIELD_NAME, parser.nextToken().id());
+    assertEquals(JsonTokenId.ID_NUMBER_INT, parser.nextToken().id());
+    assertEquals(JsonTokenId.ID_END_OBJECT, parser.nextToken().id());
+  }
+
+  @Test
+  public void testParseArray() throws Exception {
+    JsonParser parser = JacksonCodec.createParser("{\"nested\":[0,1,2],\"another\":4}");
+    assertEquals(JsonTokenId.ID_START_OBJECT, parser.nextToken().id());
+    assertEquals(JsonTokenId.ID_FIELD_NAME, parser.nextToken().id());
+    assertEquals(JsonTokenId.ID_START_ARRAY, parser.nextToken().id());
+    Object nested = JacksonCodec.parseArray(parser);
+    assertEquals(Arrays.asList(0, 1, 2), nested);
+    assertEquals(JsonTokenId.ID_FIELD_NAME, parser.nextToken().id());
+    assertEquals(JsonTokenId.ID_NUMBER_INT, parser.nextToken().id());
+    assertEquals(JsonTokenId.ID_END_OBJECT, parser.nextToken().id());
+  }
 }

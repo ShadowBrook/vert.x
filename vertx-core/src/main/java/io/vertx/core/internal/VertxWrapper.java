@@ -10,25 +10,30 @@
  */
 package io.vertx.core.internal;
 
-import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
-import io.netty.resolver.AddressResolverGroup;
 import io.vertx.core.*;
 import io.vertx.core.datagram.DatagramSocket;
 import io.vertx.core.datagram.DatagramSocketOptions;
 import io.vertx.core.dns.DnsClient;
 import io.vertx.core.dns.DnsClientOptions;
-import io.vertx.core.dns.impl.DnsAddressResolverProvider;
 import io.vertx.core.eventbus.EventBus;
 import io.vertx.core.file.FileSystem;
 import io.vertx.core.http.*;
-import io.vertx.core.impl.*;
+import io.vertx.core.http.impl.HttpClientBuilderInternal;
+import io.vertx.core.internal.deployment.DeploymentManager;
+import io.vertx.core.internal.resolver.NameResolver;
 import io.vertx.core.internal.threadchecker.BlockedThreadChecker;
+import io.vertx.core.net.ClientSSLOptions;
 import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetClientOptions;
+import io.vertx.core.net.NetServer;
 import io.vertx.core.net.NetServerOptions;
-import io.vertx.core.net.impl.NetServerInternal;
+import io.vertx.core.internal.net.NetServerInternal;
+import io.vertx.core.net.ServerSSLOptions;
+import io.vertx.core.net.TcpClientConfig;
+import io.vertx.core.net.TcpServerConfig;
 import io.vertx.core.net.impl.ServerID;
+import io.vertx.core.spi.context.storage.ContextLocal;
 import io.vertx.core.spi.transport.Transport;
 import io.vertx.core.shareddata.SharedData;
 import io.vertx.core.spi.VerticleFactory;
@@ -37,10 +42,8 @@ import io.vertx.core.spi.file.FileResolver;
 import io.vertx.core.spi.metrics.VertxMetrics;
 import io.vertx.core.spi.tracing.VertxTracer;
 
-import java.io.File;
 import java.lang.ref.Cleaner;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
@@ -74,6 +77,16 @@ public abstract class VertxWrapper implements VertxInternal {
   }
 
   @Override
+  public NetServer createNetServer(TcpServerConfig config, ServerSSLOptions sslOptions) {
+    return delegate.createNetServer(config, sslOptions);
+  }
+
+  @Override
+  public NetClient createNetClient(TcpClientConfig config, ClientSSLOptions sslOptions) {
+    return delegate.createNetClient(config, sslOptions);
+  }
+
+  @Override
   public NetServerInternal createNetServer(NetServerOptions options) {
     return delegate.createNetServer(options);
   }
@@ -84,12 +97,12 @@ public abstract class VertxWrapper implements VertxInternal {
   }
 
   @Override
-  public HttpServer createHttpServer(HttpServerOptions options) {
-    return delegate.createHttpServer(options);
+  public HttpServerBuilder httpServerBuilder() {
+    return delegate.httpServerBuilder();
   }
 
   @Override
-  public HttpClientBuilder httpClientBuilder() {
+  public HttpClientBuilderInternal httpClientBuilder() {
     return delegate.httpClientBuilder();
   }
 
@@ -111,11 +124,6 @@ public abstract class VertxWrapper implements VertxInternal {
   @Override
   public EventBus eventBus() {
     return delegate.eventBus();
-  }
-
-  @Override
-  public DnsAddressResolverProvider dnsAddressResolverProvider(InetSocketAddress addr) {
-    return delegate.dnsAddressResolverProvider(addr);
   }
 
   @Override
@@ -154,28 +162,18 @@ public abstract class VertxWrapper implements VertxInternal {
   }
 
   @Override
-  public void runOnContext(Handler<Void> action) {
-    delegate.runOnContext(action);
-  }
-
-  @Override
   public Future<Void> close() {
     return delegate.close();
   }
 
   @Override
-  public Future<String> deployVerticle(Verticle verticle, DeploymentOptions options) {
-    return delegate.deployVerticle(verticle, options);
+  public Future<String> deployVerticle(Supplier<? extends Deployable> supplier, DeploymentOptions options) {
+    return delegate.deployVerticle(supplier, options);
   }
 
   @Override
-  public Future<String> deployVerticle(Class<? extends Verticle> verticleClass, DeploymentOptions options) {
+  public Future<String> deployVerticle(Class<? extends Deployable> verticleClass, DeploymentOptions options) {
     return delegate.deployVerticle(verticleClass, options);
-  }
-
-  @Override
-  public Future<String> deployVerticle(Supplier<Verticle> verticleSupplier, DeploymentOptions options) {
-    return delegate.deployVerticle(verticleSupplier, options);
   }
 
   @Override
@@ -239,23 +237,8 @@ public abstract class VertxWrapper implements VertxInternal {
   }
 
   @Override
-  public <T> PromiseInternal<T> promise() {
-    return delegate.promise();
-  }
-
-  @Override
-  public <T> PromiseInternal<T> promise(Promise<T> promise) {
-    return delegate.promise(promise);
-  }
-
-  @Override
-  public long maxEventLoopExecTime() {
-    return delegate.maxEventLoopExecTime();
-  }
-
-  @Override
-  public TimeUnit maxEventLoopExecTimeUnit() {
-    return delegate.maxEventLoopExecTimeUnit();
+  public ContextBuilder contextBuilder() {
+    return delegate.contextBuilder();
   }
 
   @Override
@@ -264,23 +247,23 @@ public abstract class VertxWrapper implements VertxInternal {
   }
 
   @Override
-  public EventLoopGroup getEventLoopGroup() {
-    return delegate.getEventLoopGroup();
+  public EventLoopGroup eventLoopGroup() {
+    return delegate.eventLoopGroup();
   }
 
   @Override
-  public EventLoopGroup getAcceptorEventLoopGroup() {
-    return delegate.getAcceptorEventLoopGroup();
+  public EventLoopGroup acceptorEventLoopGroup() {
+    return delegate.acceptorEventLoopGroup();
   }
 
   @Override
-  public WorkerPool getWorkerPool() {
-    return delegate.getWorkerPool();
+  public WorkerPool workerPool() {
+    return delegate.workerPool();
   }
 
   @Override
-  public WorkerPool getInternalWorkerPool() {
-    return delegate.getInternalWorkerPool();
+  public WorkerPool internalWorkerPool() {
+    return delegate.internalWorkerPool();
   }
 
   @Override
@@ -289,8 +272,8 @@ public abstract class VertxWrapper implements VertxInternal {
   }
 
   @Override
-  public VertxMetrics metricsSPI() {
-    return delegate.metricsSPI();
+  public VertxMetrics metrics() {
+    return delegate.metrics();
   }
 
   @Override
@@ -306,51 +289,6 @@ public abstract class VertxWrapper implements VertxInternal {
   @Override
   public ContextInternal getContext() {
     return delegate.getContext();
-  }
-
-  @Override
-  public ContextInternal createEventLoopContext(Deployment deployment, CloseFuture closeFuture, WorkerPool workerPool, ClassLoader tccl) {
-    return delegate.createEventLoopContext(deployment, closeFuture, workerPool, tccl);
-  }
-
-  @Override
-  public ContextInternal createEventLoopContext(EventLoop eventLoop, WorkerPool workerPool, ClassLoader tccl) {
-    return delegate.createEventLoopContext(eventLoop, workerPool, tccl);
-  }
-
-  @Override
-  public ContextInternal createEventLoopContext() {
-    return delegate.createEventLoopContext();
-  }
-
-  @Override
-  public ContextInternal createVirtualThreadContext(Deployment deployment, CloseFuture closeFuture, ClassLoader tccl) {
-    return delegate.createVirtualThreadContext(deployment, closeFuture, tccl);
-  }
-
-  @Override
-  public ContextInternal createVirtualThreadContext(EventLoop eventLoop, ClassLoader tccl) {
-    return delegate.createVirtualThreadContext(eventLoop, tccl);
-  }
-
-  @Override
-  public ContextInternal createVirtualThreadContext() {
-    return delegate.createVirtualThreadContext();
-  }
-
-  @Override
-  public ContextInternal createWorkerContext(EventLoop eventLoop, WorkerPool workerPool, ClassLoader tccl) {
-    return delegate.createWorkerContext(eventLoop, workerPool, tccl);
-  }
-
-  @Override
-  public ContextInternal createWorkerContext(Deployment deployment, CloseFuture closeFuture, WorkerPool workerPool, ClassLoader tccl) {
-    return delegate.createWorkerContext(deployment, closeFuture, workerPool, tccl);
-  }
-
-  @Override
-  public ContextInternal createWorkerContext() {
-    return delegate.createWorkerContext();
   }
 
   @Override
@@ -384,53 +322,18 @@ public abstract class VertxWrapper implements VertxInternal {
   }
 
   @Override
-  public void simulateKill() {
-    delegate.simulateKill();
+  public ClusterManager clusterManager() {
+    return delegate.clusterManager();
   }
 
   @Override
-  public Deployment getDeployment(String deploymentID) {
-    return delegate.getDeployment(deploymentID);
+  public DeploymentManager deploymentManager() {
+    return delegate.deploymentManager();
   }
 
   @Override
-  public void failoverCompleteHandler(FailoverCompleteHandler failoverCompleteHandler) {
-    delegate.failoverCompleteHandler(failoverCompleteHandler);
-  }
-
-  @Override
-  public boolean isKilled() {
-    return delegate.isKilled();
-  }
-
-  @Override
-  public void failDuringFailover(boolean fail) {
-    delegate.failDuringFailover(fail);
-  }
-
-  @Override
-  public File resolveFile(String fileName) {
-    return delegate.resolveFile(fileName);
-  }
-
-  @Override
-  public ClusterManager getClusterManager() {
-    return delegate.getClusterManager();
-  }
-
-  @Override
-  public HAManager haManager() {
-    return delegate.haManager();
-  }
-
-  @Override
-  public Future<InetAddress> resolveAddress(String hostname) {
-    return delegate.resolveAddress(hostname);
-  }
-
-  @Override
-  public HostnameResolver hostnameResolver() {
-    return delegate.hostnameResolver();
+  public NameResolver nameResolver() {
+    return delegate.nameResolver();
   }
 
   @Override
@@ -439,8 +342,8 @@ public abstract class VertxWrapper implements VertxInternal {
   }
 
   @Override
-  public AddressResolverGroup<InetSocketAddress> nettyAddressResolverGroup() {
-    return delegate.nettyAddressResolverGroup();
+  public List<ContextLocal<?>> contextLocals() {
+    return delegate.contextLocals();
   }
 
   @Override

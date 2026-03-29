@@ -11,6 +11,9 @@
 
 package io.vertx.core.spi.file;
 
+import io.vertx.core.file.FileSystemOptions;
+import io.vertx.core.file.impl.FileResolverImpl;
+
 import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
@@ -32,6 +35,16 @@ import java.io.IOException;
 public interface FileResolver extends Closeable {
 
   /**
+   * Create a file resolver.
+   *
+   * @param options the fs options
+   * @return the file resolver
+   */
+  static FileResolver fileResolver(FileSystemOptions options) {
+    return new FileResolverImpl(options);
+  }
+
+  /**
    * Resolve the file for the specified {@code fileName}.
    *
    * This method should never return {@code null}, it can return a file that does not exist.
@@ -39,7 +52,7 @@ public interface FileResolver extends Closeable {
    * @param fileName the name to resolve
    * @return a file resolved
    */
-  File resolveFile(String fileName);
+  File resolve(String fileName);
 
   /**
    * Close this file resolver, this is a blocking operation.

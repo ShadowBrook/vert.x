@@ -17,10 +17,14 @@ import io.vertx.core.DeploymentOptions;
 import io.vertx.core.Promise;
 import io.vertx.core.VertxOptions;
 import io.vertx.core.http.*;
+import io.vertx.test.http.HttpClientConfig;
+import io.vertx.test.http.HttpConfig;
+import io.vertx.test.http.HttpServerConfig;
 import io.vertx.test.http.HttpTestBase;
 import io.vertx.test.tls.Cert;
 import io.vertx.test.tls.Trust;
 import org.junit.Assume;
+import org.junit.Ignore;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -35,23 +39,34 @@ import java.util.stream.Collectors;
 /**
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
-public class Http1xTLSTest extends HttpTLSTest {
+public class Http1xTLSTest extends HttpTCPTLSTest {
 
-  @Override
-  protected HttpServerOptions createBaseServerOptions() {
-    return new HttpServerOptions()
-      .setPort(HttpTestBase.DEFAULT_HTTPS_PORT)
-      .setSsl(true);
-  };
-
-  @Override
-  protected HttpClientOptions createBaseClientOptions() {
-    return new HttpClientOptions()
-      .setSsl(true)
-      .setProtocolVersion(HttpVersion.HTTP_1_1);
+  public Http1xTLSTest() {
+    super(new HttpConfig.Http1xOr2Config() {
+      @Override
+      public HttpVersion version() {
+        return HttpVersion.HTTP_1_1;
+      }
+      @Override
+      public HttpServerOptions createBaseServerOptions() {
+        return new HttpServerOptions().setPort(HttpTestBase.DEFAULT_HTTPS_PORT);
+      }
+      @Override
+      public HttpClientOptions createBaseClientOptions() {
+        return new HttpClientOptions().setProtocolVersion(HttpVersion.HTTP_1_1);
+      }
+      @Override
+      public int port() {
+        return DEFAULT_HTTPS_PORT;
+      }
+      @Override
+      public String host() {
+        return "localhost";
+      }
+    });
   }
 
-// ALPN tests
+  // ALPN tests
 
   @Test
   // Client and server uses ALPN
@@ -69,54 +84,47 @@ public class Http1xTLSTest extends HttpTLSTest {
   }
 
   @Test
-  // Client trusts all server certs
   public void testSSLClientRequestOptionsSetSSL() throws Exception {
     RequestOptions options = new RequestOptions().setHost(DEFAULT_HTTPS_HOST).setPort(DEFAULT_HTTPS_PORT).setURI(DEFAULT_TEST_URI).setSsl(true);
     testTLS(Cert.NONE, Trust.SERVER_JKS, Cert.SERVER_JKS, Trust.NONE).clientSSL(true).requestOptions(options).pass();
   }
 
   @Test
-  // Client trusts all server certs
   public void testClearClientRequestOptionsSetClear() throws Exception {
     RequestOptions options = new RequestOptions().setHost(DEFAULT_HTTPS_HOST).setURI(DEFAULT_TEST_URI).setPort(DEFAULT_HTTPS_PORT).setSsl(false);
-    testTLS(Cert.NONE, Trust.SERVER_JKS, Cert.SERVER_JKS, Trust.NONE).clientSSL(false).serverSSL(false).requestOptions(options).pass();
+    testTLS(Cert.NONE, Trust.SERVER_JKS, Cert.NONE, Trust.NONE).clientSSL(false).serverSSL(false).requestOptions(options).pass();
   }
 
   @Test
-  // Client trusts all server certs
   public void testSSLClientRequestOptionsSetClear() throws Exception {
     RequestOptions options = new RequestOptions().setHost(DEFAULT_HTTPS_HOST).setURI(DEFAULT_TEST_URI).setPort(DEFAULT_HTTPS_PORT).setSsl(false);
-    testTLS(Cert.NONE, Trust.SERVER_JKS, Cert.SERVER_JKS, Trust.NONE).clientSSL(true).serverSSL(false).requestOptions(options).pass();
+    testTLS(Cert.NONE, Trust.SERVER_JKS, Cert.NONE, Trust.NONE).clientSSL(true).serverSSL(false).requestOptions(options).pass();
   }
 
   // requestAbs test
 
   @Test
-  // Client trusts all server certs
   public void testClearClientRequestAbsSetSSL() throws Exception {
     String absoluteURI = "https://" + DEFAULT_HTTPS_HOST_AND_PORT + "/" + DEFAULT_TEST_URI;
     testTLS(Cert.NONE, Trust.SERVER_JKS, Cert.SERVER_JKS, Trust.NONE).clientSSL(false).requestProvider(c -> c.request(new RequestOptions().setMethod(HttpMethod.POST).setAbsoluteURI(absoluteURI))).pass();
   }
 
   @Test
-  // Client trusts all server certs
   public void testSSLClientRequestAbsSetSSL() throws Exception {
     String absoluteURI = "https://" + DEFAULT_HTTPS_HOST_AND_PORT + "/" + DEFAULT_TEST_URI;
     testTLS(Cert.NONE, Trust.SERVER_JKS, Cert.SERVER_JKS, Trust.NONE).clientSSL(true).requestProvider(c -> c.request(new RequestOptions().setMethod(HttpMethod.POST).setAbsoluteURI(absoluteURI))).pass();
   }
 
   @Test
-  // Client trusts all server certs
   public void testClearClientRequestAbsSetClear() throws Exception {
     String absoluteURI = "http://" + DEFAULT_HTTPS_HOST_AND_PORT + "/" + DEFAULT_TEST_URI;
-    testTLS(Cert.NONE, Trust.SERVER_JKS, Cert.SERVER_JKS, Trust.NONE).clientSSL(false).serverSSL(false).requestProvider(c -> c.request(new RequestOptions().setMethod(HttpMethod.POST).setAbsoluteURI(absoluteURI))).pass();
+    testTLS(Cert.NONE, Trust.SERVER_JKS, Cert.NONE, Trust.NONE).clientSSL(false).serverSSL(false).requestProvider(c -> c.request(new RequestOptions().setMethod(HttpMethod.POST).setAbsoluteURI(absoluteURI))).pass();
   }
 
   @Test
-  // Client trusts all server certs
   public void testSSLClientRequestAbsSetClear() throws Exception {
     String absoluteURI = "http://" + DEFAULT_HTTPS_HOST_AND_PORT + "/" + DEFAULT_TEST_URI;
-    testTLS(Cert.NONE, Trust.SERVER_JKS, Cert.SERVER_JKS, Trust.NONE).clientSSL(true).serverSSL(false).requestProvider(c -> c.request(new RequestOptions().setMethod(HttpMethod.POST).setAbsoluteURI(absoluteURI))).pass();
+    testTLS(Cert.NONE, Trust.SERVER_JKS, Cert.NONE, Trust.NONE).clientSSL(true).serverSSL(false).requestProvider(c -> c.request(new RequestOptions().setMethod(HttpMethod.POST).setAbsoluteURI(absoluteURI))).pass();
   }
 
   // Redirect tests

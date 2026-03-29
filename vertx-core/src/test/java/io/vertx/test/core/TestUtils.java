@@ -16,28 +16,25 @@ import static org.junit.Assert.fail;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.net.URISyntaxException;
 import java.net.URL;
-import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.security.KeyFactory;
 import java.security.cert.Certificate;
 import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 import java.util.zip.GZIPOutputStream;
 
-import javax.security.cert.X509Certificate;
-
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.http2.Http2CodecUtil;
 import io.netty.util.NetUtil;
-import io.netty.util.internal.ThreadLocalRandom;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 import io.vertx.core.Future;
 import io.vertx.core.MultiMap;
@@ -52,6 +49,7 @@ import io.vertx.core.net.PfxOptions;
 import io.vertx.core.net.TrustOptions;
 import io.vertx.core.net.impl.KeyStoreHelper;
 import io.vertx.test.netty.TestLoggerFactory;
+import junit.framework.AssertionFailedError;
 
 /**
  * @author <a href="http://tfox.org">Tim Fox</a>
@@ -75,6 +73,16 @@ public class TestUtils {
     } catch (URISyntaxException e) {
       return new File("target");
     }
+  }
+
+  public static File createTmpDirectory(String name) {
+    for (int i = 0;i < 1000;i++) {
+      File f = new File(MAVEN_TARGET_DIR, name + "-" + i);
+      if (!f.exists() && f.mkdirs()) {
+        return f;
+      }
+    }
+    throw new AssertionFailedError("Could not create a tmp directory");
   }
 
   /**
@@ -472,12 +480,6 @@ public class TestUtils {
     return null;
   }
 
-  public static String cnOf(X509Certificate cert) throws Exception {
-    String dn = cert.getSubjectDN().getName();
-    List<String> names = KeyStoreHelper.getX509CertificateCommonNames(dn);
-    return names.isEmpty() ? null : names.get(0);
-  }
-
   /**
    * @return the loopback address for testing
    */
@@ -511,12 +513,15 @@ public class TestUtils {
       .map(p -> "" + p.getName(0)).collect(Collectors.joining("/"));
   }
 
-  public static TestLoggerFactory testLogging(Runnable runnable) {
+  /**
+   * This class should be used in integration tests only.
+   */
+  public static TestLoggerFactory testLogging(Consumer<TestLoggerFactory> runnable) {
     InternalLoggerFactory prev = InternalLoggerFactory.getDefaultFactory();
     TestLoggerFactory factory = new TestLoggerFactory();
     InternalLoggerFactory.setDefaultFactory(factory);
     try {
-      runnable.run();
+      runnable.accept(factory);
     } finally {
       InternalLoggerFactory.setDefaultFactory(prev);
     }
@@ -553,30 +558,6 @@ public class TestUtils {
    */
   public static void executeInVanillaVertxThread(Runnable task) {
     new Thread(task, "vert.x-vanilla-thread").start();
-  }
-
-
-  public static <T, S> T runWithServiceLoader(Class<S> service, Class<? extends S> impl, Supplier<T> supplier) {
-    URLClassLoader cl = new URLClassLoader(new URL[0], Thread.currentThread().getContextClassLoader()) {
-      @Override
-      public Enumeration<URL> findResources(String name) throws IOException {
-        if (name.equals("META-INF/services/" + service.getName())) {
-          File f = File.createTempFile("vertx", ".txt");
-          f.deleteOnExit();
-          Files.write(f.toPath(), impl.getName().getBytes());
-          return Collections.enumeration(Collections.singleton(f.toURI().toURL()));
-        }
-        return super.findResources(name);
-      }
-    };
-    Thread th = Thread.currentThread();
-    ClassLoader previousCL = th.getContextClassLoader();
-    th.setContextClassLoader(cl);
-    try {
-      return supplier.get();
-    } finally {
-      th.setContextClassLoader(previousCL);
-    }
   }
 
   private static final Base64.Encoder encoder = Base64.getUrlEncoder().withoutPadding();

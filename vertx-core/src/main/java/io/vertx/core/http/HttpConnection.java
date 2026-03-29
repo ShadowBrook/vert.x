@@ -20,7 +20,10 @@ import io.vertx.core.net.SocketAddress;
 import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLSession;
 import java.security.cert.Certificate;
+import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -37,6 +40,11 @@ import java.util.concurrent.TimeUnit;
  */
 @VertxGen
 public interface HttpConnection {
+
+  /**
+   * @return the version of the protocol of this connection
+   */
+  HttpVersion protocolVersion();
 
   /**
    * @return the current connection window size or {@code -1} for HTTP/1.x
@@ -62,7 +70,9 @@ public interface HttpConnection {
 
   /**
    * Like {@link #goAway(long, int)} with a last stream id {@code -1} which means to disallow any new stream creation.
+   * @deprecated instead use {@link #shutdown()}
    */
+  @Deprecated
   @Fluent
   default HttpConnection goAway(long errorCode) {
     return goAway(errorCode, -1);
@@ -70,7 +80,9 @@ public interface HttpConnection {
 
   /**
    * Like {@link #goAway(long, int, Buffer)} with no buffer.
+   * @deprecated instead use {@link #shutdown()}
    */
+  @Deprecated
   @Fluent
   default HttpConnection goAway(long errorCode, int lastStreamId) {
     return goAway(errorCode, lastStreamId, null);
@@ -91,7 +103,9 @@ public interface HttpConnection {
    * @param lastStreamId the last stream id
    * @param debugData additional debug data sent to the remote endpoint
    * @return a reference to this, so the API can be used fluently
+   * @deprecated instead use {@link #shutdown()}
    */
+  @Deprecated
   @Fluent
   HttpConnection goAway(long errorCode, int lastStreamId, Buffer debugData);
 
@@ -127,6 +141,13 @@ public interface HttpConnection {
   }
 
   /**
+   * Calls {@link #shutdown(Duration)}
+   */
+  default Future<Void> shutdown(long timeout, TimeUnit unit) {
+    return shutdown(Duration.of(timeout, unit.toChronoUnit()));
+  }
+
+  /**
    * Initiate a graceful connection shutdown, the connection is taken out of service and closed when all the inflight requests
    * are processed, otherwise after a {@code timeout} the connection will be closed. Client connection are immediately removed
    * from the pool.
@@ -137,10 +158,10 @@ public interface HttpConnection {
    * </ul>
    *
    * @param timeout the amount of time after which all resources are forcibly closed
-   * @param unit the of the timeout
    * @return a future completed when shutdown has completed
    */
-  Future<Void> shutdown(long timeout, TimeUnit unit);
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  Future<Void> shutdown(Duration timeout);
 
   /**
    * Set a close handler. The handler will get notified when the connection is closed.
@@ -163,7 +184,7 @@ public interface HttpConnection {
   /**
    * @return the latest server settings acknowledged by the remote endpoint - this is not implemented for HTTP/1.x
    */
-  Http2Settings settings();
+  HttpSettings settings();
 
   /**
    * Send to the remote endpoint an update of this endpoint settings
@@ -175,15 +196,15 @@ public interface HttpConnection {
    * @param settings the new settings
    * @return a future completed when the settings have been acknowledged by the remote endpoint
    */
-  Future<Void> updateSettings(Http2Settings settings);
+  Future<Void> updateSettings(HttpSettings settings);
 
   /**
    * @return the current remote endpoint settings for this connection - this is not implemented for HTTP/1.x
    */
-  Http2Settings remoteSettings();
+  HttpSettings remoteSettings();
 
   /**
-   * Set an handler that is called when remote endpoint {@link Http2Settings} are updated.
+   * Set an handler that is called when remote endpoint {@link HttpSettings} are updated.
    * <p/>
    * This is not implemented for HTTP/1.x.
    *
@@ -191,7 +212,7 @@ public interface HttpConnection {
    * @return a reference to this, so the API can be used fluently
    */
   @Fluent
-  HttpConnection remoteSettingsHandler(Handler<Http2Settings> handler);
+  HttpConnection remoteSettingsHandler(Handler<HttpSettings> handler);
 
   /**
    * Send a {@literal PING} frame to the remote endpoint.
@@ -268,7 +289,14 @@ public interface HttpConnection {
    * @see #sslSession()
    */
   @GenIgnore()
-  List<Certificate> peerCertificates() throws SSLPeerUnverifiedException;
+  default List<Certificate> peerCertificates() throws SSLPeerUnverifiedException {
+    SSLSession session = sslSession();
+    if (session != null) {
+      return Arrays.asList(session.getPeerCertificates());
+    } else {
+      return null;
+    }
+  }
 
   /**
    * Returns the SNI server name presented during the SSL handshake by the client.
@@ -276,5 +304,15 @@ public interface HttpConnection {
    * @return the indicated server name
    */
   String indicatedServerName();
+
+  /**
+   * @return the type-length-values present in the TCP header as a list of map entries
+   * where the key contains the TLV type and the value contains the TLV value.
+   * This is mainly used for HA Proxy Protocol v2
+   */
+  @GenIgnore()
+  default List<Map.Entry<Buffer, Buffer>> proxyProtocolV2HeaderTLVs() {
+    return List.of();
+  }
 
 }

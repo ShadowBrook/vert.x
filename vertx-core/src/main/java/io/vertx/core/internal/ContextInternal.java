@@ -15,6 +15,8 @@ import io.netty.channel.EventLoop;
 import io.vertx.core.*;
 import io.vertx.core.Future;
 import io.vertx.core.impl.*;
+import io.vertx.core.internal.deployment.Deployment;
+import io.vertx.core.internal.deployment.DeploymentContext;
 import io.vertx.core.impl.future.FailedFuture;
 import io.vertx.core.impl.future.PromiseImpl;
 import io.vertx.core.impl.future.SucceededFuture;
@@ -24,7 +26,6 @@ import io.vertx.core.spi.tracing.VertxTracer;
 
 import java.util.Objects;
 import java.util.concurrent.*;
-import java.util.function.Supplier;
 
 /**
  * This interface provides an api for vert.x core internal use only
@@ -35,13 +36,13 @@ import java.util.function.Supplier;
  */
 public interface ContextInternal extends Context {
 
-  ContextLocal<ConcurrentMap<Object, Object>> LOCAL_MAP = new ContextLocalImpl<>(0);
+  ContextLocal<ConcurrentMap<Object, Object>> LOCAL_MAP = new ContextLocalImpl<>(0, ConcurrentHashMap::new);
 
   /**
    * @return the current context
    */
   static ContextInternal current() {
-    return VertxImpl.currentContext();
+    return VertxImpl.currentContext(Thread.currentThread());
   }
 
   @Override
@@ -50,17 +51,14 @@ public interface ContextInternal extends Context {
   }
 
   /**
-   * @return an executor that schedule a task on this context, the thread executing the task will not be associated with this context
+   * @return an event executor that schedule a task on this context, the thread executing the task will not be associated with this context
    */
-  Executor executor();
+  EventExecutor executor();
 
-  default ContextInternal asEventLoopContext() {
-    if (threadingModel() == ThreadingModel.EVENT_LOOP) {
-      return this;
-    } else {
-      return owner().createEventLoopContext(nettyEventLoop(), workerPool(), classLoader());
-    }
-  }
+  /**
+   * @return the event loop executor of this context
+   */
+  EventExecutor eventLoop();
 
   /**
    * Return the Netty EventLoop used by this Context. This can be used to integrate
@@ -81,7 +79,7 @@ public interface ContextInternal extends Context {
    * @return a {@link Promise} associated with this context or the {@code handler}
    *         if that handler is already an instance of {@code PromiseInternal}
    */
-  default <T> PromiseInternal<T> promise(Promise<T> p) {
+  default <T> PromiseInternal<T> promise(Completable<T> p) {
     if (p instanceof PromiseInternal) {
       PromiseInternal<T> promise = (PromiseInternal<T>) p;
       if (promise.context() != null) {
@@ -91,6 +89,24 @@ public interface ContextInternal extends Context {
     PromiseInternal<T> promise = promise();
     promise.future().onComplete(p);
     return promise;
+  }
+
+  /**
+   * Create a promise and pass it to the {@code handler}, and then returns this future's promise. The {@code handler}
+   * is responsible for completing the promise, if the {@code handler} throws an exception, the promise is attempted
+   * to be failed with this exception.
+   *
+   * @param handler the handler completing the promise
+   * @return the future of the created promise
+   */
+  default <T> Future<T> future(Handler<Promise<T>> handler) {
+    Promise<T> promise = promise();
+    try {
+      handler.handle(promise);
+    } catch (Throwable t) {
+      promise.tryFail(t);
+    }
+    return promise.future();
   }
 
   /**
@@ -122,25 +138,21 @@ public interface ContextInternal extends Context {
   }
 
   /**
-   * Like {@link #executeBlocking(Callable, boolean)} but uses the {@code queue} to order the tasks instead
-   * of the internal queue of this context.
-   */
-  <T> Future<T> executeBlocking(Callable<T> blockingCodeHandler, TaskQueue queue);
-
-  /**
    * Execute an internal task on the internal blocking ordered executor.
    */
-  <T> Future<T> executeBlockingInternal(Callable<T> action);
+  default <T> Future<T> executeBlockingInternal(Callable<T> action) {
+    return ExecuteBlocking.executeBlocking(owner().internalWorkerPool(), this, action, null);
+  }
 
   /**
-   * Execute an internal task on the internal blocking ordered executor.
+   * @return the context worker pool
    */
-  <T> Future<T> executeBlockingInternal(Callable<T> action, boolean ordered);
+  WorkerPool workerPool();
 
   /**
    * @return the deployment associated with this context or {@code null}
    */
-  Deployment getDeployment();
+  DeploymentContext deployment();
 
   @Override
   VertxInternal owner();
@@ -300,78 +312,34 @@ public interface ContextInternal extends Context {
 
   /**
    * @return the {@link ConcurrentMap} used to store local context data
+   * @deprecated instead use {@link #getLocal}/{@link #putLocal}/{@link #removeLocal} methods
    */
+  @Deprecated(forRemoval = true)
   default ConcurrentMap<Object, Object> localContextData() {
     return LOCAL_MAP.get(this, ConcurrentHashMap::new);
   }
 
   /**
-   * Get some local data from the context.
-   *
-   * @param key  the key of the data
-   * @param <T>  the type of the data
-   * @return the local data
+   * @deprecated instead use {@link #getLocal(ContextLocal, AccessMode)}
    */
-  default <T> T getLocal(ContextLocal<T> key) {
-    return getLocal(key, AccessMode.CONCURRENT);
-  }
-
-  /**
-   * Get some local data from the context.
-   *
-   * @param key  the key of the data
-   * @param <T>  the type of the data
-   * @return the local data
-   */
-  <T> T getLocal(ContextLocal<T> key, AccessMode accessMode);
-
-  /**
-   * Get some local data from the context, when it does not exist the {@code initialValueSupplier} is called to obtain
-   * the initial value.
-   *
-   * <p> The {@code initialValueSupplier} might be called multiple times when multiple threads call this method concurrently.
-   *
-   * @param key  the key of the data
-   * @param initialValueSupplier the supplier of the initial value optionally called
-   * @param <T>  the type of the data
-   * @return the local data
-   */
-  <T> T getLocal(ContextLocal<T> key, AccessMode accessMode, Supplier<? extends T> initialValueSupplier);
-
-  /**
-   * Put some local data in the context.
-   * <p>
-   * This can be used to share data between different handlers that share a context
-   *
-   * @param key  the key of the data
-   * @param value  the data
-   */
-  <T> void putLocal(ContextLocal<T> key, AccessMode accessMode, T value);
-
-  /**
-   * Remove some local data from the context.
-   *
-   * @param key  the key to remove
-   */
-  default <T> void removeLocal(ContextLocal<T> key, AccessMode accessMode) {
-    putLocal(key, accessMode, null);
-  }
-
-  @Deprecated
+  @Deprecated(forRemoval = true)
   @SuppressWarnings("unchecked")
-  @Override
   default <T> T getLocal(Object key) {
     return (T) localContextData().get(key);
   }
 
-  @Deprecated
-  @Override
+  /**
+   * @deprecated instead use {@link #putLocal(ContextLocal, AccessMode, Object)}
+   */
+  @Deprecated(forRemoval = true)
   default void putLocal(Object key, Object value) {
     localContextData().put(key, value);
   }
 
-  @Deprecated
-  @Override
+  /**
+   * @deprecated instead use {@link #removeLocal(ContextLocal, AccessMode)}
+   */
+  @Deprecated(forRemoval = true)
   default boolean removeLocal(Object key) {
     return localContextData().remove(key) != null;
   }
@@ -380,11 +348,6 @@ public interface ContextInternal extends Context {
    * @return the classloader associated with this context
    */
   ClassLoader classLoader();
-
-  /**
-   * @return the context worker pool
-   */
-  WorkerPool workerPool();
 
   /**
    * @return the tracer for this context
@@ -404,13 +367,17 @@ public interface ContextInternal extends Context {
    * <p>
    * The duplicate context has its own
    * <ul>
-   *   <li>local context data</li>
+   *   <li>local context data, initialized with a copy of the existing local context data when {@code copy} is {@code true}</li>
    *   <li>worker task queue</li>
    * </ul>
    *
    * @return a duplicate of this context
    */
-  ContextInternal duplicate();
+  ContextInternal duplicate(boolean copy);
+
+  default ContextInternal duplicate() {
+    return duplicate(false);
+  }
 
   /**
    * Like {@link Vertx#setPeriodic(long, Handler)} except the periodic timer will fire on this context and the
@@ -461,30 +428,30 @@ public interface ContextInternal extends Context {
    * @return {@code true} when the context is associated with a deployment
    */
   default boolean isDeployment() {
-    return getDeployment() != null;
+    return deployment() != null;
   }
 
   default String deploymentID() {
-    Deployment deployment = getDeployment();
-    return deployment != null ? deployment.deploymentID() : null;
+    DeploymentContext deployment = deployment();
+    return deployment != null ? deployment.id() : null;
   }
 
   default int getInstanceCount() {
-    Deployment deployment = getDeployment();
-
-    // the no verticle case
+    DeploymentContext deployment = deployment();
     if (deployment == null) {
       return 0;
     }
-
-    // the single verticle without an instance flag explicitly defined
-    if (deployment.deploymentOptions() == null) {
-      return 1;
-    }
-    return deployment.deploymentOptions().getInstances();
+    return deployment.deployment().options().getInstances();
   }
 
   CloseFuture closeFuture();
+
+  /**
+   * Close this context, cleanup close future hooks then dispose pending ordered task queue.
+   *
+   * @return a future signalling close completion
+   */
+  Future<Void> close();
 
   /**
    * Add a close hook.
@@ -527,4 +494,5 @@ public interface ContextInternal extends Context {
     return false;
   }
 
+  ContextBuilder toBuilder();
 }

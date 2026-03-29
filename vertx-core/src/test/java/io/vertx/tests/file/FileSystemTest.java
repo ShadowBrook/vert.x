@@ -22,6 +22,7 @@ import io.vertx.core.file.impl.AsyncFileImpl;
 import io.vertx.core.impl.Utils;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.streams.ReadStream;
+import io.vertx.test.core.Repeat;
 import io.vertx.test.core.TestUtils;
 import io.vertx.test.core.VertxTestBase;
 import org.junit.Assume;
@@ -116,8 +117,8 @@ public class FileSystemTest extends VertxTestBase {
     assertNullPointerException(() -> vertx.fileSystem().readSymlinkBlocking(null));
     assertNullPointerException(() -> vertx.fileSystem().delete(null));
     assertNullPointerException(() -> vertx.fileSystem().deleteBlocking(null));
-    assertNullPointerException(() -> vertx.fileSystem().deleteRecursive(null, true));
-    assertNullPointerException(() -> vertx.fileSystem().deleteRecursiveBlocking(null, true));
+    assertNullPointerException(() -> vertx.fileSystem().deleteRecursive(null));
+    assertNullPointerException(() -> vertx.fileSystem().deleteRecursiveBlocking(null));
     assertNullPointerException(() -> vertx.fileSystem().mkdir(null));
     assertNullPointerException(() -> vertx.fileSystem().mkdirBlocking(null));
     assertNullPointerException(() -> vertx.fileSystem().mkdir(null, "ignored"));
@@ -827,7 +828,7 @@ public class FileSystemTest extends VertxTestBase {
   private void testDelete(String fileName, boolean recursive, boolean shouldPass,
                           Handler<Void> afterOK) {
     if (recursive) {
-      vertx.fileSystem().deleteRecursive(testDir + pathSep + fileName, recursive).onComplete(createHandler(shouldPass, afterOK));
+      vertx.fileSystem().deleteRecursive(testDir + pathSep + fileName).onComplete(createHandler(shouldPass, afterOK));
     } else {
       vertx.fileSystem().delete(testDir + pathSep + fileName).onComplete(createHandler(shouldPass, afterOK));
     }
@@ -2241,19 +2242,28 @@ public class FileSystemTest extends VertxTestBase {
       return promise.future();
     });
     awaitLatch(latch);
-    CountDownLatch latch2 = new CountDownLatch(1);
-    file.lock().onComplete(onFailure(err -> {
-      latch2.countDown();
-    }));
-    awaitLatch(latch2);
+    try {
+      file.lock().await();
+      fail();
+    } catch (Exception e) {
+      assertSame(FileSystemException.class, e.getClass());
+    }
     String expected = TestUtils.randomAlphaString(10);
     completer.accept(expected, promise);
-    CountDownLatch latch3 = new CountDownLatch(1);
-    file.lock().onComplete(onSuccess(lock -> {
-      latch3.countDown();
-      lock.release();
-    }));
-    awaitLatch(latch3);
+    int retries = 3;
+    while (true) {
+      try {
+        file.lock().await();
+        break;
+      } catch (Exception e) {
+        if (e instanceof FileSystemException && retries-- > 0) {
+          // Retry
+          Thread.sleep(5);
+        } else {
+          throw e;
+        }
+      }
+    }
     res.onComplete(ar -> {
       if (ar.succeeded()) {
         assertEquals(expected, ar.result());
@@ -2263,6 +2273,7 @@ public class FileSystemTest extends VertxTestBase {
       testComplete();
     });
     file.close();
+    await();
   }
 
   @Test

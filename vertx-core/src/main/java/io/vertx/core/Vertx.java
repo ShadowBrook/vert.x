@@ -19,21 +19,34 @@ import io.vertx.core.dns.DnsClientOptions;
 import io.vertx.core.eventbus.EventBus;
 import io.vertx.core.file.FileSystem;
 import io.vertx.core.http.*;
+import io.vertx.core.http.impl.HttpServerBuilderImpl;
 import io.vertx.core.impl.VertxImpl;
 import io.vertx.core.internal.ContextInternal;
-import io.vertx.core.impl.VertxBuilder;
 import io.vertx.core.dns.impl.DnsAddressResolverProvider;
 import io.vertx.core.internal.VertxBootstrap;
+import io.vertx.core.internal.VertxInternal;
 import io.vertx.core.metrics.Measured;
+import io.vertx.core.net.ClientSSLOptions;
 import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetClientOptions;
 import io.vertx.core.net.NetServer;
 import io.vertx.core.net.NetServerOptions;
+import io.vertx.core.net.QuicClient;
+import io.vertx.core.net.QuicClientConfig;
+import io.vertx.core.net.QuicServer;
+import io.vertx.core.net.QuicServerConfig;
+import io.vertx.core.net.SSLEngineOptions;
+import io.vertx.core.net.ServerSSLOptions;
+import io.vertx.core.net.TcpClientConfig;
+import io.vertx.core.net.TcpServerConfig;
+import io.vertx.core.net.impl.quic.QuicClientImpl;
+import io.vertx.core.net.impl.quic.QuicServerImpl;
 import io.vertx.core.shareddata.SharedData;
 import io.vertx.core.spi.VerticleFactory;
 import io.vertx.core.spi.VertxMetricsFactory;
 import io.vertx.core.spi.VertxTracerFactory;
 import io.vertx.core.spi.cluster.ClusterManager;
+import io.vertx.core.transport.Transport;
 
 import java.util.Set;
 import java.util.concurrent.Callable;
@@ -80,6 +93,7 @@ public interface Vertx extends Measured {
       private ClusterManager clusterManager;
       private VertxMetricsFactory metricsFactory;
       private VertxTracerFactory tracerFactory;
+      private Transport transport;
       @Override
       public io.vertx.core.VertxBuilder with(VertxOptions options) {
         this.options = options;
@@ -101,27 +115,39 @@ public interface Vertx extends Measured {
         return this;
       }
       @Override
-      public Vertx build() {
-        VertxBootstrap builder = VertxBootstrap.create();
+      public VertxBuilder withTransport(Transport transport) {
+        this.transport = transport;
+        return this;
+      }
+      private VertxBootstrap bootstrap() {
+        VertxBootstrap bootstrap = VertxBootstrap.create();
         if (options != null) {
-          builder.options(options);
+          bootstrap.options(options);
         }
-        builder.metricsFactory(metricsFactory);
-        builder.tracerFactory(tracerFactory);
-        builder.init();
-        return builder.vertx();
+        bootstrap.metricsFactory(metricsFactory);
+        bootstrap.tracerFactory(tracerFactory);
+        Transport tr = transport;
+        if (tr == null && options != null && options.getPreferNativeTransport()) {
+          tr = Transport.nativeTransport();
+        }
+        if (tr == null) {
+          tr = Transport.NIO;
+        }
+        bootstrap.transport(tr.implementation());
+        return bootstrap;
+      }
+      @Override
+      public Vertx build() {
+        return bootstrap()
+          .init()
+          .vertx();
       }
       @Override
       public Future<Vertx> buildClustered() {
-        VertxBootstrap builder = VertxBootstrap.create();
-        if (options != null) {
-          builder.options(options);
-        }
-        builder.clusterManager(clusterManager);
-        builder.metricsFactory(metricsFactory);
-        builder.tracerFactory(tracerFactory);
-        builder.init();
-        return builder.clusteredVertx();
+        return bootstrap()
+          .clusterManager(clusterManager)
+          .init()
+          .clusteredVertx();
       }
     };
   }
@@ -142,7 +168,7 @@ public interface Vertx extends Measured {
    * @return the instance
    */
   static Vertx vertx(VertxOptions options) {
-    return VertxBootstrap.create().options(options).init().vertx();
+    return builder().with(options).build();
   }
 
   /**
@@ -154,7 +180,7 @@ public interface Vertx extends Measured {
    * @return a future completed with the clustered vertx
    */
   static Future<Vertx> clusteredVertx(VertxOptions options) {
-    return VertxBootstrap.create().options(options).init().clusteredVertx();
+    return builder().with(options).buildClustered();
   }
 
   /**
@@ -163,7 +189,7 @@ public interface Vertx extends Measured {
    * @return The current context or {@code null} if there is no current context
    */
   static @Nullable Context currentContext() {
-    return VertxImpl.currentContext();
+    return VertxImpl.currentContext(Thread.currentThread());
   }
 
   /**
@@ -172,6 +198,25 @@ public interface Vertx extends Measured {
    * @return The current context (created if didn't exist)
    */
   Context getOrCreateContext();
+
+  /**
+   * Create a TCP/SSL server using the specified config
+   *
+   * @param config  the config to use
+   * @return the server
+   */
+  default NetServer createNetServer(TcpServerConfig config) {
+    return createNetServer(config, null);
+  }
+
+  /**
+   * Create a TCP/SSL server using the specified config and the specified ssl options
+   *
+   * @param config  the config to use
+   * @param sslOptions the server SSL options
+   * @return the server
+   */
+  NetServer createNetServer(TcpServerConfig config, ServerSSLOptions sslOptions);
 
   /**
    * Create a TCP/SSL server using the specified options
@@ -191,6 +236,25 @@ public interface Vertx extends Measured {
   }
 
   /**
+   * Create a TCP/SSL client using the specified config
+   *
+   * @param config  the config to use
+   * @return the client
+   */
+  default NetClient createNetClient(TcpClientConfig config) {
+    return createNetClient(config, null);
+  }
+
+  /**
+   * Create a TCP/SSL client using the specified config and the specified ssl options
+   *
+   * @param config  the config to use
+   * @param sslOptions the default client SSL options
+   * @return the client
+   */
+  NetClient createNetClient(TcpClientConfig config, ClientSSLOptions sslOptions);
+
+  /**
    * Create a TCP/SSL client using the specified options
    *
    * @param options  the options to use
@@ -208,21 +272,131 @@ public interface Vertx extends Measured {
   }
 
   /**
-   * Create an HTTP/HTTPS server using the specified options
+   * <p>Create a configured Quic server.</p>
+   *
+   * <p>The returned server can be bound, after setting a connection {@link QuicServer#connectHandler(Handler) handler}</p>
+   *
+   * @param config the server configuration
+   * @param sslOptions the server SSL options
+   * @return the server
+   */
+  default QuicServer createQuicServer(QuicServerConfig config, ServerSSLOptions sslOptions) {
+    return QuicServerImpl.create((VertxInternal) this, config, sslOptions);
+  }
+
+  /**
+   * Like {@link Vertx#createQuicServer(QuicServerConfig, ServerSSLOptions)}, with the default server configuration.
+   */
+  default QuicServer createQuicServer(ServerSSLOptions sslOptions) {
+    return createQuicServer(new QuicServerConfig(), sslOptions);
+  }
+
+  /**
+   * <p>Create a configured Quic client.</p>
+   *
+   * @param config the client configuration
+   * @param sslOptions the default client SSL options
+   * @return the client
+   */
+  default QuicClient createQuicClient(QuicClientConfig config, ClientSSLOptions sslOptions) {
+    VertxInternal vertxInternal = (VertxInternal) this;
+    return QuicClientImpl.create(vertxInternal, config, sslOptions);
+  }
+
+  /**
+   * Like {@link #createQuicClient(QuicClientConfig, ClientSSLOptions)}, with the default client configuration.
+   */
+  default QuicClient createQuicClient(ClientSSLOptions defaultSslOptions) {
+    return createQuicClient(new QuicClientConfig(), defaultSslOptions);
+  }
+
+  /**
+   * <p>Create a configured Quic client.</p>
+   *
+   * @param config the client configuration
+   * @return the client
+   */
+  default QuicClient createQuicClient(QuicClientConfig config) {
+    return createQuicClient(config, null);
+  }
+
+  /**
+   * Create an HTTP/HTTPS server using the specified {@code options}
    *
    * @param options  the options to use
    * @return the server
    */
-  HttpServer createHttpServer(HttpServerOptions options);
+  default HttpServer createHttpServer(HttpServerOptions options) {
+    HttpServerConfig config = new HttpServerConfig(options);
+    ServerSSLOptions sslOptions = options.getSslOptions();
+    if (options.isSsl()) {
+      if (sslOptions != null) {
+        sslOptions = sslOptions.copy();
+      } else if (options.isSsl()) {
+        sslOptions = new ServerSSLOptions();
+      }
+    } else {
+      sslOptions = null;
+    }
+    SSLEngineOptions sslEngineOptions = options.getSslEngineOptions();
+    if (sslEngineOptions != null) {
+      sslEngineOptions = sslEngineOptions.copy();
+    }
+    HttpServerBuilder builder = ((HttpServerBuilderImpl)httpServerBuilder())
+      .with(config)
+      .with(sslOptions)
+      .with(sslEngineOptions)
+      .registerWebSocketWriteHandlers(options.isRegisterWebSocketWriteHandlers());
+    return builder.build();
+  }
 
   /**
-   * Create an HTTP/HTTPS server using default options
+   * Create an HTTP server using the specified {@code config}.
+   *
+   * @param config  the config to use
+   * @return the server
+   */
+  default HttpServer createHttpServer(HttpServerConfig config) {
+    return createHttpServer(config, null);
+  }
+
+  /**
+   * Create an HTTP server using the specified config and the specified {@code sslOptions}
+   *
+   * @param config  the config to use
+   * @param sslOptions  the ssl options to use
+   * @return the server
+   */
+  default HttpServer createHttpServer(HttpServerConfig config, ServerSSLOptions sslOptions) {
+    return httpServerBuilder().with(config).with(sslOptions).build();
+  }
+
+  /**
+   * Create an HTTP server using default config and the specified {@code sslOptions}.
+   *
+   * @param sslOptions  the ssl options to use
+   * @return the server
+   */
+  default HttpServer createHttpServer(ServerSSLOptions sslOptions) {
+    return httpServerBuilder().with(new HttpServerConfig()).with(sslOptions).build();
+  }
+
+  /**
+   * Create an HTTP/HTTPS server using default config.
    *
    * @return the server
    */
   default HttpServer createHttpServer() {
     return createHttpServer(new HttpServerOptions());
   }
+
+  /**
+   * Provide a builder for {@link HttpServer}, it can be used to configure advanced
+   * HTTP servre settings like a connection handler.
+   * <p>
+   * Example usage: {@code HttpServer server = vertx.httpServerBuilder().with(options).withConnectHandler(conn -> ...).build()}
+   */
+  HttpServerBuilder httpServerBuilder();
 
   /**
    * Create a WebSocket client using default options
@@ -252,12 +426,56 @@ public interface Vertx extends Measured {
   /**
    * Create a HTTP/HTTPS client using the specified client and pool options
    *
+   * @param clientConfig  the client config to use
+   * @param poolOptions  the pool options to use
+   * @return the client
+   */
+  default HttpClientAgent createHttpClient(HttpClientConfig clientConfig, PoolOptions poolOptions) {
+    return httpClientBuilder().with(clientConfig).with(poolOptions).build();
+  }
+
+  /**
+   * Create a HTTP/HTTPS client using the specified client, ssl options and pool options
+   *
+   * @param clientConfig  the client config to use
+   * @param sslOptions the ssl options to use
+   * @param poolOptions  the pool options to use
+   * @return the client
+   */
+  default HttpClientAgent createHttpClient(HttpClientConfig clientConfig, ClientSSLOptions sslOptions,  PoolOptions poolOptions) {
+    return httpClientBuilder().with(clientConfig).with(sslOptions).with(poolOptions).build();
+  }
+
+  /**
+   * Create a HTTP/HTTPS client using the specified client and ssl options
+   *
+   * @param clientConfig  the client config to use
+   * @param sslOptions the ssl options to use
+   * @return the client
+   */
+  default HttpClientAgent createHttpClient(HttpClientConfig clientConfig, ClientSSLOptions sslOptions) {
+    return httpClientBuilder().with(clientConfig).with(sslOptions).build();
+  }
+
+  /**
+   * Create a HTTP/HTTPS client using the specified client and pool options
+   *
    * @param clientOptions  the client options to use
    * @param poolOptions  the pool options to use
    * @return the client
    */
   default HttpClientAgent createHttpClient(HttpClientOptions clientOptions, PoolOptions poolOptions) {
     return httpClientBuilder().with(clientOptions).with(poolOptions).build();
+  }
+
+  /**
+   * Create an HTTP/HTTPS client using the specified config
+   *
+   * @param config  the config to use
+   * @return the server
+   */
+  default HttpClientAgent createHttpClient(HttpClientConfig config) {
+    return httpClientBuilder().with(config).build();
   }
 
   /**
@@ -454,12 +672,12 @@ public interface Vertx extends Measured {
    * @return a future completed with the result
    */
   @GenIgnore(GenIgnore.PERMITTED_TYPE)
-  default Future<String> deployVerticle(Verticle verticle) {
+  default Future<String> deployVerticle(Deployable verticle) {
     return deployVerticle(verticle, new DeploymentOptions());
   }
 
   /**
-   * Like {@link #deployVerticle(Verticle)} but {@link io.vertx.core.DeploymentOptions} are provided to configure the
+   * Like {@link #deployVerticle(Deployable)} but {@link io.vertx.core.DeploymentOptions} are provided to configure the
    * deployment.
    *
    * @param verticle  the verticle instance to deploy
@@ -467,18 +685,12 @@ public interface Vertx extends Measured {
    * @return a future completed with the result
    */
   @GenIgnore(GenIgnore.PERMITTED_TYPE)
-  Future<String> deployVerticle(Verticle verticle, DeploymentOptions options);
+  default Future<String> deployVerticle(Deployable verticle, DeploymentOptions options) {
+    return deployVerticle(() -> verticle, options);
+  }
 
   /**
-   * Like {@link #deployVerticle(Verticle, DeploymentOptions)} but {@link Verticle} instance is created by invoking the
-   * default constructor of {@code verticleClass}.
-   * @return a future completed with the result
-   */
-  @GenIgnore
-  Future<String> deployVerticle(Class<? extends Verticle> verticleClass, DeploymentOptions options);
-
-  /**
-   * Like {@link #deployVerticle(Verticle, DeploymentOptions)} but {@link Verticle} instance is created by invoking the
+   * Like {@link #deployVerticle(Deployable, DeploymentOptions)} but {@link Deployable} instance is created by invoking the
    * {@code verticleSupplier}.
    * <p>
    * The supplier will be invoked as many times as {@link DeploymentOptions#getInstances()}.
@@ -489,7 +701,15 @@ public interface Vertx extends Measured {
    * @return a future completed with the result
    */
   @GenIgnore(GenIgnore.PERMITTED_TYPE)
-  Future<String> deployVerticle(Supplier<Verticle> verticleSupplier, DeploymentOptions options);
+  Future<String> deployVerticle(Supplier<? extends Deployable> supplier, DeploymentOptions options);
+
+  /**
+   * Like {@link #deployVerticle(Deployable, DeploymentOptions)} but {@link Deployable} instance is created by invoking the
+   * default constructor of {@code verticleClass}.
+   * @return a future completed with the result
+   */
+  @GenIgnore
+  Future<String> deployVerticle(Class<? extends Deployable> verticleClass, DeploymentOptions options);
 
   /**
    * Deploy a verticle instance given a name.
@@ -511,7 +731,7 @@ public interface Vertx extends Measured {
   }
 
   /**
-   * Like {@link #deployVerticle(Verticle)} but {@link io.vertx.core.DeploymentOptions} are provided to configure the
+   * Like {@link #deployVerticle(Deployable)} but {@link io.vertx.core.DeploymentOptions} are provided to configure the
    * deployment.
    *
    * @param name  the name

@@ -10,49 +10,70 @@
  */
 package io.vertx.core.http.impl;
 
+import io.vertx.core.Completable;
 import io.vertx.core.Future;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Promise;
 import io.vertx.core.http.*;
+import io.vertx.core.http.impl.websocket.ClientWebSocketImpl;
 import io.vertx.core.internal.ContextInternal;
-import io.vertx.core.internal.VertxInternal;
 import io.vertx.core.internal.PromiseInternal;
+import io.vertx.core.internal.VertxInternal;
+import io.vertx.core.internal.http.HttpClientTransport;
+import io.vertx.core.internal.resource.ResourceManager;
 import io.vertx.core.net.ClientSSLOptions;
 import io.vertx.core.net.HostAndPort;
 import io.vertx.core.net.ProxyOptions;
 import io.vertx.core.net.SocketAddress;
-import io.vertx.core.net.impl.endpoint.EndpointManager;
-import io.vertx.core.net.impl.endpoint.EndpointProvider;
 import io.vertx.core.spi.metrics.ClientMetrics;
+import io.vertx.core.spi.metrics.HttpClientMetrics;
+import io.vertx.core.spi.metrics.PoolMetrics;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.time.Duration;
 import java.util.List;
+import java.util.function.Function;
 
 public class WebSocketClientImpl extends HttpClientBase implements WebSocketClient {
 
+  private final HttpClientTransport connector;
   private final WebSocketClientOptions options;
-  private final EndpointManager<EndpointKey, WebSocketEndpoint> webSocketCM;
+  private final ResourceManager<EndpointKey, WebSocketGroup> webSocketCM;
+  private volatile ClientSSLOptions defaultSslOptions;
 
-  public WebSocketClientImpl(VertxInternal vertx, HttpClientOptions options, WebSocketClientOptions wsOptions) {
-    super(vertx, options);
+  public WebSocketClientImpl(VertxInternal vertx,
+                             HttpClientOptions options,
+                             WebSocketClientOptions wsOptions,
+                             HttpClientTransport connector,
+                             HttpClientMetrics<?, ?> httpMetrics) {
+    super(vertx, httpMetrics, options.getProxyOptions(), options.getNonProxyHosts());
+
+    ClientSSLOptions sslOptions = options.getSslOptions();
+    if (sslOptions != null) {
+      configureSSLOptions(options.isVerifyHost(), sslOptions);
+    }
 
     this.options = wsOptions;
-    this.webSocketCM = webSocketConnectionManager();
+    this.webSocketCM = new ResourceManager<>();
+    this.connector = connector;
+    this.defaultSslOptions = sslOptions;
   }
 
-  private EndpointManager<EndpointKey, WebSocketEndpoint> webSocketConnectionManager() {
-    return new EndpointManager<>();
-  }
-
-  protected void doShutdown(Promise<Void> p) {
+  protected void doShutdown(Duration timeout, Completable<Void> p) {
     webSocketCM.shutdown();
-    super.doShutdown(p);
+    connector.shutdown(timeout).onComplete(p);
   }
 
-  protected void doClose(Promise<Void> p) {
+  protected void doClose(Completable<Void> p) {
     webSocketCM.close();
-    super.doClose(p);
+    Future<Void> root = connector.close();
+    if (httpMetrics != null) {
+      root = root.andThen(ar -> {
+        httpMetrics.close();
+      });
+    }
+    root.onComplete(p);
   }
 
   @Override
@@ -60,23 +81,30 @@ public class WebSocketClientImpl extends HttpClientBase implements WebSocketClie
     return webSocket(options);
   }
 
-  void webSocket(ContextInternal ctx, WebSocketConnectOptions connectOptions, Promise<WebSocket> promise) {
+  @Override
+  protected void setDefaultSslOptions(ClientSSLOptions options) {
+    configureSSLOptions(this.options.isVerifyHost(), options);
+    this.defaultSslOptions = options;
+  }
+
+  public void webSocket(ContextInternal ctx, WebSocketConnectOptions connectOptions, Promise<WebSocket> promise) {
     int port = getPort(connectOptions);
     String host = getHost(connectOptions);
     SocketAddress addr = SocketAddress.inetSocketAddress(port, host);
     HostAndPort peer = HostAndPort.create(host, port);
     ProxyOptions proxyOptions = computeProxyOptions(connectOptions.getProxyOptions(), addr);
-    ClientSSLOptions sslOptions = sslOptions(connectOptions);
-    EndpointKey key = new EndpointKey(connectOptions.isSsl() != null ? connectOptions.isSsl() : options.isSsl(), sslOptions, proxyOptions, addr, peer);
+    ClientSSLOptions sslOptions = sslOptions(options.isVerifyHost(), connectOptions, defaultSslOptions);
+    EndpointKey key = new EndpointKey(connectOptions.isSsl() != null ? connectOptions.isSsl() : options.isSsl(), HttpVersion.HTTP_1_1, sslOptions, proxyOptions, addr, peer);
     // todo: cache
-    EndpointProvider<EndpointKey, WebSocketEndpoint> provider = (key_, dispose) -> {
+    Function<EndpointKey, WebSocketGroup> provider = (key_) -> {
       int maxPoolSize = options.getMaxConnections();
-      ClientMetrics metrics = WebSocketClientImpl.this.metrics != null ? WebSocketClientImpl.this.metrics.createEndpointMetrics(key_.server, maxPoolSize) : null;
-      HttpChannelConnector connector = new HttpChannelConnector(WebSocketClientImpl.this, netClient, sslOptions, key_.proxyOptions, metrics, HttpVersion.HTTP_1_1, key_.ssl, false, key_.authority, key_.server, false);
-      return new WebSocketEndpoint(null, options, maxPoolSize, connector, dispose);
+      ClientMetrics clientMetrics = WebSocketClientImpl.this.httpMetrics != null ? WebSocketClientImpl.this.httpMetrics.createEndpointMetrics(key_.server, maxPoolSize) : null;
+      PoolMetrics queueMetrics = WebSocketClientImpl.this.httpMetrics != null ? vertx.metrics().createPoolMetrics("ws", key_.server.toString(), maxPoolSize) : null;
+      HttpConnectParams params = new HttpConnectParams(List.of(HttpVersion.HTTP_1_1), sslOptions, key_.proxyOptions, key_.ssl);
+      return new WebSocketGroup(key_.server, httpMetrics, clientMetrics, queueMetrics, options, maxPoolSize, connector, params, key_.authority, 0L);
     };
     webSocketCM
-      .withEndpointAsync(key, provider, (endpoint, created) -> endpoint.requestConnection(ctx, connectOptions, 0L))
+      .withResourceAsync(key, provider, (endpoint, created) -> endpoint.requestConnection(ctx, connectOptions, 0L))
       .onComplete(c -> {
         if (c.succeeded()) {
           WebSocket conn = c.result();
@@ -95,7 +123,7 @@ public class WebSocketClientImpl extends HttpClientBase implements WebSocketClie
     return webSocket(vertx.getOrCreateContext(), options);
   }
 
-  static WebSocketConnectOptions webSocketConnectOptionsAbs(String url, MultiMap headers, WebsocketVersion version, List<String> subProtocols) {
+  static WebSocketConnectOptions webSocketConnectOptionsAbs(String url, MultiMap headers, WebSocketVersion version, List<String> subProtocols) {
     URI uri;
     try {
       uri = new URI(url);
@@ -128,7 +156,7 @@ public class WebSocketClientImpl extends HttpClientBase implements WebSocketClie
       .setSubProtocols(subProtocols);
   }
 
-  public Future<WebSocket> webSocketAbs(String url, MultiMap headers, WebsocketVersion version, List<String> subProtocols) {
+  public Future<WebSocket> webSocketAbs(String url, MultiMap headers, WebSocketVersion version, List<String> subProtocols) {
     return webSocket(webSocketConnectOptionsAbs(url, headers, version, subProtocols));
   }
 
@@ -144,5 +172,29 @@ public class WebSocketClientImpl extends HttpClientBase implements WebSocketClie
 
   public ClientWebSocket webSocket() {
     return new ClientWebSocketImpl(this);
+  }
+
+  protected int getPort(RequestOptions request) {
+    Integer port = request.getPort();
+    if (port != null) {
+      return port;
+    }
+    SocketAddress server = (SocketAddress) request.getServer();
+    if (server != null && server.isInetSocket()) {
+      return server.port();
+    }
+    return options.getDefaultPort();
+  }
+
+  protected String getHost(RequestOptions request) {
+    String host = request.getHost();
+    if (host != null) {
+      return host;
+    }
+    SocketAddress server = (SocketAddress) request.getServer();
+    if (server != null && server.isInetSocket()) {
+      return server.host();
+    }
+    return options.getDefaultHost();
   }
 }

@@ -22,13 +22,12 @@ import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.internal.PromiseInternal;
 import io.vertx.core.net.SocketAddress;
 
-import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLSession;
-import java.security.cert.Certificate;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
+import java.util.Map;
 
 /**
  * An un-pooled HTTP client connection that maintains a queue for pending requests that cannot be served
@@ -36,14 +35,14 @@ import java.util.concurrent.TimeUnit;
  *
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
-public class UnpooledHttpClientConnection implements HttpClientConnection {
+public class UnpooledHttpClientConnection implements io.vertx.core.http.HttpClientConnection {
 
-  private final HttpClientConnectionInternal actual;
+  private final HttpClientConnection actual;
   private final Deque<PromiseInternal<HttpClientStream>> pending;
   private long concurrency;
   private long inflight;
 
-  public UnpooledHttpClientConnection(HttpClientConnectionInternal actual) {
+  public UnpooledHttpClientConnection(HttpClientConnection actual) {
     this.actual = actual;
     this.concurrency = actual.concurrency();
     this.pending = new ArrayDeque<>();
@@ -62,6 +61,10 @@ public class UnpooledHttpClientConnection implements HttpClientConnection {
     return this;
   }
 
+  public HttpClientConnection unwrap() {
+    return actual;
+  }
+
   @Override
   public long activeStreams() {
     return actual.activeStreams();
@@ -73,8 +76,8 @@ public class UnpooledHttpClientConnection implements HttpClientConnection {
   }
 
   @Override
-  public Future<Void> shutdown(long timeout, TimeUnit unit) {
-    return actual.shutdown(timeout, unit);
+  public Future<Void> shutdown(Duration timeout) {
+    return actual.shutdown(timeout);
   }
 
   @Override
@@ -86,6 +89,11 @@ public class UnpooledHttpClientConnection implements HttpClientConnection {
   @Fluent
   public HttpConnection setWindowSize(int windowSize) {
     return actual.setWindowSize(windowSize);
+  }
+
+  @Override
+  public HttpVersion protocolVersion() {
+    return actual.protocolVersion();
   }
 
   @Override
@@ -125,23 +133,23 @@ public class UnpooledHttpClientConnection implements HttpClientConnection {
   }
 
   @Override
-  public Http2Settings settings() {
+  public HttpSettings settings() {
     return actual.settings();
   }
 
   @Override
-  public Future<Void> updateSettings(Http2Settings settings) {
+  public Future<Void> updateSettings(HttpSettings settings) {
     return actual.updateSettings(settings);
   }
 
   @Override
-  public Http2Settings remoteSettings() {
+  public HttpSettings remoteSettings() {
     return actual.remoteSettings();
   }
 
   @Override
   @Fluent
-  public HttpConnection remoteSettingsHandler(Handler<Http2Settings> handler) {
+  public HttpConnection remoteSettingsHandler(Handler<HttpSettings> handler) {
     return actual.remoteSettingsHandler(handler);
   }
 
@@ -196,14 +204,13 @@ public class UnpooledHttpClientConnection implements HttpClientConnection {
   }
 
   @Override
-  @GenIgnore
-  public List<Certificate> peerCertificates() throws SSLPeerUnverifiedException {
-    return actual.peerCertificates();
+  public String indicatedServerName() {
+    return actual.indicatedServerName();
   }
 
   @Override
-  public String indicatedServerName() {
-    return actual.indicatedServerName();
+  public List<Map.Entry<Buffer, Buffer>> proxyProtocolV2HeaderTLVs() {
+    return actual.proxyProtocolV2HeaderTLVs();
   }
 
   /**
@@ -247,7 +254,7 @@ public class UnpooledHttpClientConnection implements HttpClientConnection {
 
   @Override
   public Future<HttpClientRequest> request(RequestOptions options) {
-    ContextInternal ctx = actual.getContext().owner().getOrCreateContext();
+    ContextInternal ctx = actual.context().owner().getOrCreateContext();
     return request(ctx, options);
   }
 }

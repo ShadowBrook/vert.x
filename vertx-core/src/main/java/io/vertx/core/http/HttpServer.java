@@ -17,12 +17,12 @@ import io.vertx.core.Handler;
 import io.vertx.codegen.annotations.Fluent;
 import io.vertx.codegen.annotations.VertxGen;
 import io.vertx.core.metrics.Measured;
-import io.vertx.core.net.NetSocket;
 import io.vertx.core.net.ServerSSLOptions;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.core.net.TrafficShapingOptions;
 import io.vertx.core.net.impl.SocketAddressImpl;
 
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -79,8 +79,20 @@ public interface HttpServer extends Measured {
   HttpServer connectionHandler(Handler<HttpConnection> handler);
 
   /**
+   * Set a handler for WebSocket handshake.
+   *
+   * <p>When an inbound HTTP request presents a WebSocket upgrade, this handler is called first. The handler
+   * can chose to {@link ServerWebSocketHandshake#accept()} or {@link ServerWebSocketHandshake#reject()} the request.</p>
+   *
+   * <p>Setting no handler, implicitly accepts any HTTP request connection presenting an upgrade header and upgrades it
+   * to a WebSocket.</p>
+   */
+  @Fluent
+  HttpServer webSocketHandshakeHandler(Handler<ServerWebSocketHandshake> handler);
+
+  /**
    * Set an exception handler called for socket errors happening before the HTTP connection
-   * is established, e.g during the TLS handshake.
+   * is established, e.g. during the TLS handshake.
    *
    * @param handler the handler to set
    * @return a reference to this, so the API can be used fluently
@@ -133,12 +145,19 @@ public interface HttpServer extends Measured {
   Future<Boolean> updateSSLOptions(ServerSSLOptions options, boolean force);
 
   /**
-   * Update traffic shaping options {@code options}, the update happens if valid values are passed for traffic
-   * shaping options. This update happens synchronously and at best effort for rate update to take effect immediately.
+   * <p>Update the server with new traffic {@code options}, the update happens if the options object is valid and different
+   * from the existing options object.
+   *
+   * <p>The {@code options} object is compared using its {@code equals} method against the existing options to prevent
+   * an update when the objects are equals since loading options can be costly, this can happen for share TCP servers.
+   * When object are equals, setting {@code force} to {@code true} forces the update.
+   *
+   * <p>The boolean succeeded future result indicates whether the update occurred.
    *
    * @param options the new traffic shaping options
+   * @return a future signaling the update success
    */
-  void updateTrafficShapingOptions(TrafficShapingOptions options);
+  Future<Boolean> updateTrafficShapingOptions(TrafficShapingOptions options);
 
   /**
    * Tell the server to start listening. The server will listen on the port and host specified in the
@@ -195,16 +214,23 @@ public interface HttpServer extends Measured {
    * @return a future completed with the result
    */
   default Future<Void> close() {
-    return shutdown(0, TimeUnit.SECONDS);
+    return shutdown(Duration.ZERO);
   }
 
   /**
-   * Shutdown with a 30 seconds timeout ({@code shutdown(30, TimeUnit.SECONDS)}).
+   * Shutdown with a 30 seconds timeout ({@code shutdown(Duration.ofSeconds(30))}).
    *
    * @return a future completed when shutdown has completed
    */
   default Future<Void> shutdown() {
-    return shutdown(30, TimeUnit.SECONDS);
+    return shutdown(Duration.ofSeconds(30));
+  }
+
+  /**
+   * Calls {@link #shutdown(Duration)}.
+   */
+  default Future<Void> shutdown(long timeout, TimeUnit unit) {
+    return shutdown(Duration.of(timeout, unit.toChronoUnit()));
   }
 
   /**
@@ -219,10 +245,10 @@ public interface HttpServer extends Measured {
    * </ul>
    *
    * @param timeout the amount of time after which all resources are forcibly closed
-   * @param unit the of the timeout
    * @return a future notified when the client is closed
    */
-  Future<Void> shutdown(long timeout, TimeUnit unit);
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  Future<Void> shutdown(Duration timeout);
 
   /**
    * The actual port the server is listening on. This is useful if you bound the server specifying 0 as port number

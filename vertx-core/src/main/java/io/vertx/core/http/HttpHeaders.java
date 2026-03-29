@@ -13,13 +13,13 @@ package io.vertx.core.http;
 
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaderValues;
+import io.netty.handler.codec.http2.DefaultHttp2Headers;
 import io.netty.handler.codec.http2.Http2Headers;
 import io.netty.util.AsciiString;
 import io.vertx.codegen.annotations.GenIgnore;
 import io.vertx.codegen.annotations.VertxGen;
 import io.vertx.core.MultiMap;
-import io.vertx.core.http.impl.headers.HeadersMultiMap;
-import io.vertx.core.impl.SysProps;
+import io.vertx.core.http.impl.headers.Http1xHeaders;
 
 /**
  * Contains a bunch of useful HTTP headers stuff:
@@ -34,14 +34,6 @@ import io.vertx.core.impl.SysProps;
  */
 @VertxGen
 public interface HttpHeaders {
-
-  /** JVM system property that disables HTTP headers validation, don't use this in production. */
-  @Deprecated
-  String DISABLE_HTTP_HEADERS_VALIDATION_PROP_NAME = SysProps.DISABLE_HTTP_HEADERS_VALIDATION.name;
-
-  /** Constant that disables HTTP headers validation, this is a constant so the JIT can eliminate validation code. */
-  @Deprecated
-  boolean DISABLE_HTTP_HEADERS_VALIDATION = SysProps.DISABLE_HTTP_HEADERS_VALIDATION.getBoolean();
 
   /**
    * Accept header name
@@ -362,10 +354,23 @@ public interface HttpHeaders {
   CharSequence APPLICATION_X_WWW_FORM_URLENCODED = HttpHeaderValues.APPLICATION_X_WWW_FORM_URLENCODED;
 
   /**
+   * application/application/octet-stream header value
+   */
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  CharSequence APPLICATION_OCTET_STREAM = HttpHeaderValues.APPLICATION_OCTET_STREAM;
+
+  /**
+   * multipart/form-data header value
+   */
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  CharSequence MULTIPART_FORM_DATA = HttpHeaderValues.MULTIPART_FORM_DATA;
+
+  /**
    * chunked header value
    */
   @GenIgnore(GenIgnore.PERMITTED_TYPE)
   CharSequence CHUNKED = HttpHeaderValues.CHUNKED;
+
   /**
    * close header value
    */
@@ -383,6 +388,7 @@ public interface HttpHeaders {
    */
   @GenIgnore(GenIgnore.PERMITTED_TYPE)
   CharSequence IDENTITY = HttpHeaderValues.IDENTITY;
+
   /**
    * keep-alive header value
    */
@@ -417,7 +423,7 @@ public interface HttpHeaders {
    * deflate,gzip,zstd,br header value
    */
   @GenIgnore(GenIgnore.PERMITTED_TYPE)
-  CharSequence DEFLATE_GZIP_ZSTD_BR = createOptimized("deflate, gzip, zstd, br");
+  CharSequence DEFLATE_GZIP_ZSTD_BR_SNAPPY = createOptimized("deflate, gzip, zstd, br, snappy");
 
   /**
    * deflate,gzip,zstd header value
@@ -442,6 +448,18 @@ public interface HttpHeaders {
    */
   @GenIgnore(GenIgnore.PERMITTED_TYPE)
   CharSequence VARY = createOptimized("vary");
+
+  /**
+   * Alt-svc header name
+   */
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  CharSequence ALT_SVC = HttpHeaderNames.ALT_SVC;
+
+  /**
+   * Alt-used header name
+   */
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  CharSequence ALT_USED = AsciiString.cached("alt-used");
 
   /**
    * HTTP/2 {@code :path} pseudo header
@@ -483,16 +501,35 @@ public interface HttpHeaders {
     return new AsciiString(value);
   }
 
+  /**
+   * @return a {@link MultiMap} backing an HTTP headers structure optimized for {@code HTTP/1.x}
+   */
   static MultiMap headers() {
-    return HeadersMultiMap.httpHeaders();
+    return Http1xHeaders.httpHeaders();
+  }
+
+  /**
+   * @param version version HTTP protocol hint for which the returned instance is optimized for
+   * @return a {@link MultiMap} backing an HTTP headers structure optimized for the {@code version} hint
+   */
+  static MultiMap headers(HttpVersion version) {
+    switch (version) {
+      case HTTP_1_0:
+      case HTTP_1_1:
+        return Http1xHeaders.httpHeaders();
+      case HTTP_2:
+        return new io.vertx.core.http.impl.headers.HttpHeaders(new DefaultHttp2Headers());
+      default:
+        throw new AssertionError();
+    }
   }
 
   static MultiMap set(String name, String value) {
-    return HeadersMultiMap.httpHeaders().set(name, value);
+    return Http1xHeaders.httpHeaders().set(name, value);
   }
 
   @GenIgnore(GenIgnore.PERMITTED_TYPE)
   static MultiMap set(CharSequence name, CharSequence value) {
-    return HeadersMultiMap.httpHeaders().set(name, value);
+    return Http1xHeaders.httpHeaders().set(name, value);
   }
 }

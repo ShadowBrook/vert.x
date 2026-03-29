@@ -11,11 +11,8 @@
 
 package io.vertx.core;
 
-import io.vertx.codegen.annotations.Fluent;
-import io.vertx.codegen.annotations.GenIgnore;
-import io.vertx.codegen.annotations.Nullable;
-import io.vertx.codegen.annotations.VertxGen;
-import io.vertx.core.http.impl.headers.HeadersMultiMap;
+import io.vertx.codegen.annotations.*;
+import io.vertx.core.http.impl.headers.Http1xHeaders;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -34,7 +31,7 @@ import java.util.function.Predicate;
  * @author <a href="mailto:nmaurer@redhat.com">Norman Maurer</a>
  * @author <a href="http://tfox.org">Tim Fox</a>
  */
-@VertxGen
+@DataObject
 public interface MultiMap extends Iterable<Map.Entry<String, String>> {
 
   /**
@@ -43,7 +40,7 @@ public interface MultiMap extends Iterable<Map.Entry<String, String>> {
    * @return the multi-map
    */
   static MultiMap caseInsensitiveMultiMap() {
-    return HeadersMultiMap.headers();
+    return Http1xHeaders.caseInsensitive();
   }
 
   @GenIgnore(GenIgnore.PERMITTED_TYPE)
@@ -288,5 +285,27 @@ public interface MultiMap extends Iterable<Map.Entry<String, String>> {
    * Return the number of keys.
    */
   int size();
+
+  /**
+   * @return whether this instance can be mutated.
+   */
+  boolean isMutable();
+
+  /**
+   * Returns a copy of this instance.
+   *
+   * @param mutable whether the copy can be mutated
+   * @return a copy of this instance
+   */
+  MultiMap copy(boolean mutable);
+
+  /**
+   * Returns a mutable copy of this instance.
+   *
+   * @return a mutable copy of this instance
+   */
+  default MultiMap copy() {
+    return copy(true);
+  }
 
 }

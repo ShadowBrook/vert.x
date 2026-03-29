@@ -12,27 +12,25 @@ package io.vertx.core.http.impl;
 
 import io.vertx.core.MultiMap;
 import io.vertx.core.http.HttpMethod;
+import io.vertx.core.net.HostAndPort;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.core.spi.observability.HttpRequest;
 
 /**
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
-public class HttpRequestHead implements HttpRequest {
+public class HttpRequestHead {
 
-  int id; // For internal testing correlation
-  SocketAddress remoteAddress;
+  public final String scheme;
   public final HttpMethod method;
   public final String uri;
   public final MultiMap headers;
-  public final String authority;
+  public final HostAndPort authority;
   public final String absoluteURI;
   public final String traceOperation;
 
-  public HttpRequestHead(HttpMethod method, String uri, MultiMap headers, String authority, String absoluteURI, String traceOperation) {
-    if (uri == null || uri.isEmpty()) {
-      throw new IllegalArgumentException("Invalid request URI");
-    }
+  public HttpRequestHead(String scheme, HttpMethod method, String uri, MultiMap headers, HostAndPort authority, String absoluteURI, String traceOperation) {
+    this.scheme = scheme;
     this.method = method;
     this.uri = uri;
     this.headers = headers;
@@ -41,32 +39,22 @@ public class HttpRequestHead implements HttpRequest {
     this.traceOperation = traceOperation;
   }
 
-  @Override
   public MultiMap headers() {
     return headers;
   }
 
-  @Override
-  public SocketAddress remoteAddress() {
-    return remoteAddress;
-  }
-
-  @Override
   public String absoluteURI() {
     return absoluteURI;
   }
 
-  @Override
   public int id() {
-    return id;
+    return 1;
   }
 
-  @Override
   public String uri() {
     return uri;
   }
 
-  @Override
   public HttpMethod method() {
     return method;
   }

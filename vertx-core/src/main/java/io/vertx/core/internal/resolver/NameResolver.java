@@ -1,0 +1,227 @@
+/*
+ * Copyright (c) 2011-2023 Contributors to the Eclipse Foundation
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0, or the Apache License, Version 2.0
+ * which is available at https://www.apache.org/licenses/LICENSE-2.0.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
+ */
+
+package io.vertx.core.internal.resolver;
+
+import io.netty.channel.EventLoop;
+import io.netty.resolver.AddressResolver;
+import io.netty.resolver.AddressResolverGroup;
+import io.vertx.core.*;
+import io.vertx.core.dns.AddressResolverOptions;
+import io.vertx.core.internal.PromiseInternal;
+import io.vertx.core.internal.VertxInternal;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
+import io.vertx.core.internal.ContextInternal;
+import io.vertx.core.net.Address;
+import io.vertx.core.net.SocketAddress;
+import io.vertx.core.spi.endpoint.EndpointBuilder;
+import io.vertx.core.spi.dns.AddressResolverProvider;
+import io.vertx.core.spi.endpoint.EndpointResolver;
+
+import java.io.File;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.nio.file.Files;
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * Resolves host names, using DNS and {@code /etc/hosts config} based on {@link AddressResolverOptions}
+ *
+ * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
+ */
+public class NameResolver {
+
+  private static final Logger log = LoggerFactory.getLogger(NameResolver.class);
+
+  private static final String NDOTS_LABEL = "ndots:";
+  private static final String ROTATE_LABEL = "rotate";
+  private static final String OPTIONS_ROW_LABEL = "options";
+
+  private static final int DEFAULT_NDOTS = 1;
+  private static final boolean DEFAULT_ROTATE = false;
+
+  private final AddressResolverOptions options;
+  private final VertxInternal vertx;
+  private final AddressResolverGroup<InetSocketAddress> resolverGroup;
+  private final AddressResolverProvider provider;
+
+  public NameResolver(Vertx vertx, AddressResolverOptions options) {
+    this.options = options;
+    this.provider = AddressResolverProvider.factory(vertx, options);
+    this.resolverGroup = provider.resolver(options);
+    this.vertx = (VertxInternal) vertx;
+  }
+
+  /**
+   * @return the options
+   */
+  public AddressResolverOptions options() {
+    return new AddressResolverOptions(options);
+  }
+
+  /**
+   * Resolve an address (e.g. {@code vertx.io} into the first found A (IPv4) or AAAA (IPv6) record.
+   *
+   * @param hostname the hostname to resolve
+   * @return a future notified with the result
+   */
+  public Future<InetAddress> resolve(String hostname) {
+    ContextInternal context = vertx.getOrCreateContext();
+    io.netty.util.concurrent.Future<InetSocketAddress> fut = resolve(context.nettyEventLoop(), hostname);
+    PromiseInternal<InetSocketAddress> promise = context.promise();
+    fut.addListener(promise);
+    return promise.map(InetSocketAddress::getAddress);
+  }
+
+  public Future<java.net.SocketAddress> resolve(SocketAddress address) {
+    ContextInternal context = vertx.getOrCreateContext();
+    AddressResolver<InetSocketAddress> resolver = resolver(context.nettyEventLoop());
+    java.net.SocketAddress addr = vertx.transport().convert(address);
+    if (resolver.isResolved(addr)) {
+      return context.succeededFuture(addr);
+    } else {
+      io.netty.util.concurrent.Future<InetSocketAddress> f = resolver.resolve(addr);
+      PromiseInternal<java.net.SocketAddress> p = context.promise();
+      f.addListener(p);
+      return p.future();
+    }
+  }
+
+  public io.netty.util.concurrent.Future<InetSocketAddress> resolve(EventLoop eventLoop, String hostname) {
+    io.netty.resolver.AddressResolver<InetSocketAddress> resolver = resolver(eventLoop);
+    return resolver.resolve(InetSocketAddress.createUnresolved(hostname, 0));
+  }
+
+  public Future<List<InetSocketAddress>> resolveAll(String hostname) {
+    ContextInternal context = vertx.getOrCreateContext();
+    io.netty.util.concurrent.Future<List<InetSocketAddress>> fut = resolveAll(context.nettyEventLoop(), hostname);
+    PromiseInternal<List<InetSocketAddress>> promise = context.promise();
+    fut.addListener(promise);
+    return promise.future();
+  }
+
+  public void resolveAll(String hostname, Handler<AsyncResult<List<InetSocketAddress>>> resultHandler) {
+    ContextInternal context = (ContextInternal) vertx.getOrCreateContext();
+    io.netty.util.concurrent.Future<List<InetSocketAddress>> fut = resolveAll(context.nettyEventLoop(), hostname);
+    PromiseInternal<List<InetSocketAddress>> promise = context.promise();
+    fut.addListener(promise);
+    promise.future().onComplete(resultHandler);
+  }
+
+  public io.netty.util.concurrent.Future<List<InetSocketAddress>> resolveAll(EventLoop eventLoop, String hostname) {
+    io.netty.resolver.AddressResolver<InetSocketAddress> resolver = resolver(eventLoop);
+    return resolver.resolveAll(InetSocketAddress.createUnresolved(hostname, 0));
+  }
+
+  private io.netty.resolver.AddressResolver<InetSocketAddress> resolver(EventLoop eventLoop){
+    return resolverGroup.getResolver(eventLoop);
+  }
+
+  public AddressResolverGroup<InetSocketAddress> nettyAddressResolverGroup() {
+    return resolverGroup;
+  }
+
+  public Future<Void> close() {
+    return provider.close();
+  }
+
+  // visible for testing
+  public static ResolverOptions parseLinux(File f) {
+    try {
+      if (f.exists() && f.isFile()) {
+        return parseLinux(new String(Files.readAllBytes(f.toPath())));
+      }
+    } catch (Throwable t) {
+      log.debug("Failed to load options from /etc/resolv.conf", t);
+    }
+    return new ResolverOptions(DEFAULT_NDOTS, DEFAULT_ROTATE);
+  }
+
+  // exists mainly to facilitate testing
+  public static ResolverOptions parseLinux(String input) {
+    int ndots = -1;
+    boolean rotate = false;
+    try {
+      int optionsIndex = input.indexOf(OPTIONS_ROW_LABEL);
+      if (optionsIndex != -1) {
+        boolean isProperOptionsLabel = false;
+        if (optionsIndex == 0) {
+          isProperOptionsLabel = true;
+        } else if (Character.isWhitespace(input.charAt(optionsIndex - 1))) {
+            isProperOptionsLabel = true;
+        }
+        if (isProperOptionsLabel) {
+          String afterOptions = input.substring(optionsIndex + OPTIONS_ROW_LABEL.length());
+          int rotateIndex = afterOptions.indexOf(ROTATE_LABEL);
+          if (rotateIndex != -1) {
+            if (!containsNewLine(afterOptions.substring(0, rotateIndex))) {
+              rotate = true;
+            }
+          }
+          int ndotsIndex = afterOptions.indexOf(NDOTS_LABEL);
+          if (ndotsIndex != -1) {
+            if (!containsNewLine(afterOptions.substring(0, ndotsIndex))) {
+              Matcher matcher = Holder.NDOTS_PATTERN.matcher(afterOptions.substring(ndotsIndex));
+              while (matcher.find()) {
+                ndots = Integer.parseInt(matcher.group(1));
+              }
+            }
+          }
+        }
+      }
+    } catch (NumberFormatException e) {
+      log.debug("Failed to load options from /etc/resolv.conf", e);
+    }
+    return new ResolverOptions(ndots, rotate);
+  }
+
+  //TODO: this can easily be parallelized if necessary
+  private static boolean containsNewLine(String input) {
+    for (int i = 0; i < input.length(); i++) {
+      char c = input.charAt(i);
+      if (c == '\n') {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  public static class ResolverOptions {
+    private final int ndots;
+    private final boolean rotate;
+
+    public ResolverOptions(int ndots, boolean rotate) {
+      this.ndots = ndots;
+      this.rotate = rotate;
+    }
+
+    public int ndots() {
+      return ndots;
+    }
+
+    public int effectiveNdots() {
+      return ndots != -1 ? ndots : 1;
+    }
+
+    public boolean isRotate() {
+      return rotate;
+    }
+  }
+
+  // used in order to avoid initialization of the pattern when it's not really needed
+  private static class Holder {
+
+    private static final Pattern NDOTS_PATTERN = Pattern.compile("ndots:[ \\t\\f]*(\\d)+(?=$|\\s)");
+  }
+}

@@ -14,11 +14,16 @@ package io.vertx.core.dns;
 import io.vertx.codegen.annotations.DataObject;
 import io.vertx.codegen.json.annotations.JsonGen;
 import io.vertx.core.buffer.Buffer;
-import io.vertx.core.impl.HostnameResolver;
+import io.vertx.core.internal.resolver.NameResolver;
 import io.vertx.core.json.JsonObject;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+
+import static io.vertx.core.impl.Utils.isLinux;
+import static io.vertx.core.internal.resolver.NameResolver.parseLinux;
 
 /**
  * Configuration options for Vert.x hostname resolver. The resolver uses the local <i>hosts</i> file and performs
@@ -29,6 +34,17 @@ import java.util.List;
 @DataObject
 @JsonGen(publicConverter = false)
 public class AddressResolverOptions {
+
+  static {
+    if (isLinux()) {
+      NameResolver.ResolverOptions options = parseLinux(new File("/etc/resolv.conf"));
+      DEFAULT_NDOTS = options.effectiveNdots();
+      DEFAULT_ROTATE_SERVERS = options.isRotate();
+    } else {
+      DEFAULT_NDOTS = 1;
+      DEFAULT_ROTATE_SERVERS = false;
+    }
+  }
 
   /**
    * The default list of DNS servers = null (uses system name server's list like resolve.conf otherwise Google Public DNS)
@@ -61,7 +77,12 @@ public class AddressResolverOptions {
   public static final int DEFAULT_QUERY_TIMEOUT = 5000;
 
   /**
-   * The default value for the hosts refresh value in millis = 0 (disabled)
+   * The default time unit for the hosts refresh value = NANOSECONDS
+   */
+  public static final TimeUnit DEFAULT_HOSTS_REFRESH_PERIOD_UNIT = TimeUnit.NANOSECONDS;
+
+  /**
+   * The default value for the hosts refresh value = 0 (disabled)
    */
   public static final int DEFAULT_HOSTS_REFRESH_PERIOD = 0;
 
@@ -83,20 +104,21 @@ public class AddressResolverOptions {
   /**
    * The default ndots value = loads the value from the OS on Linux otherwise use the value 1
    */
-  public static final int DEFAULT_NDOTS = HostnameResolver.DEFAULT_NDOTS_RESOLV_OPTION;
+  public static final int DEFAULT_NDOTS;
 
   /**
    * The default servers rotate value = loads the value from the OS on Linux otherwise use the value false
    */
-  public static final boolean DEFAULT_ROTATE_SERVERS = HostnameResolver.DEFAULT_ROTATE_RESOLV_OPTION;
+  public static final boolean DEFAULT_ROTATE_SERVERS;
 
   /**
-   * The default round robin inet address = false
+   * The default round-robin inet address = false
    */
   public static final boolean DEFAULT_ROUND_ROBIN_INET_ADDRESS = false;
 
   private String hostsPath;
   private Buffer hostsValue;
+  private TimeUnit hostsRefreshPeriodUnit;
   private int hostsRefreshPeriod;
   private List<String> servers;
   private boolean optResourceEnabled;
@@ -124,12 +146,14 @@ public class AddressResolverOptions {
     ndots = DEFAULT_NDOTS;
     rotateServers = DEFAULT_ROTATE_SERVERS;
     roundRobinInetAddress = DEFAULT_ROUND_ROBIN_INET_ADDRESS;
+    hostsRefreshPeriodUnit = DEFAULT_HOSTS_REFRESH_PERIOD_UNIT;
     hostsRefreshPeriod = DEFAULT_HOSTS_REFRESH_PERIOD;
   }
 
   public AddressResolverOptions(AddressResolverOptions other) {
     this.hostsPath = other.hostsPath;
     this.hostsValue = other.hostsValue != null ? other.hostsValue.copy() : null;
+    this.hostsRefreshPeriodUnit = other.getHostsRefreshPeriodUnit() != null ? other.getHostsRefreshPeriodUnit() : DEFAULT_HOSTS_REFRESH_PERIOD_UNIT;
     this.hostsRefreshPeriod = other.hostsRefreshPeriod;
     this.servers = other.servers != null ? new ArrayList<>(other.servers) : null;
     this.optResourceEnabled = other.optResourceEnabled;
@@ -193,14 +217,32 @@ public class AddressResolverOptions {
   }
 
   /**
-   * @return the hosts configuration refresh period in millis
+   * @return the hosts configuration refresh period time unit
+   */
+  public TimeUnit getHostsRefreshPeriodUnit() {
+    return hostsRefreshPeriodUnit;
+  }
+
+  /**
+   * Set the hosts configuration refresh period time unit. If not specified, default is nanoseconds.
+   *
+   * @param hostsRefreshPeriodUnit specify time unit
+   * @return a reference to this, so the API can be used fluently
+   */
+  public AddressResolverOptions setHostsRefreshPeriodUnit(TimeUnit hostsRefreshPeriodUnit) {
+    this.hostsRefreshPeriodUnit = hostsRefreshPeriodUnit;
+    return this;
+  }
+
+  /**
+   * @return the hosts configuration refresh period in time unit specified by {@link #getHostsRefreshPeriodUnit()}.
    */
   public int getHostsRefreshPeriod() {
     return hostsRefreshPeriod;
   }
 
   /**
-   * Set the hosts configuration refresh period in millis, {@code 0} disables it.
+   * Set the hosts configuration refresh period in time unit specified by {@link #getHostsRefreshPeriodUnit()}, {@code 0} disables it.
    * <p/>
    * The resolver caches the hosts configuration {@link #hostsPath file} after it has read it. When
    * the content of this file can change, setting a positive refresh period will load the configuration

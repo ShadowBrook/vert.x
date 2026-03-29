@@ -10,17 +10,23 @@
  */
 package io.vertx.core.http.impl;
 
+import io.vertx.core.Completable;
 import io.vertx.core.Future;
-import io.vertx.core.Promise;
+import io.vertx.core.Handler;
 import io.vertx.core.http.*;
+import io.vertx.core.http.HttpClientConnection;
 import io.vertx.core.internal.VertxInternal;
+import io.vertx.core.internal.http.HttpClientTransport;
+import io.vertx.core.internal.http.HttpClientInternal;
+import io.vertx.core.internal.net.endpoint.EndpointResolverInternal;
 import io.vertx.core.net.ClientSSLOptions;
-import io.vertx.core.net.impl.NetClientInternal;
 import io.vertx.core.spi.metrics.Metrics;
 
 import java.lang.ref.Cleaner;
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
+import java.util.function.Function;
 
 /**
  * A lightweight proxy of Vert.x {@link HttpClient} that can be collected by the garbage collector and release
@@ -31,16 +37,15 @@ import java.util.function.BiFunction;
 public class CleanableHttpClient implements HttpClientInternal {
 
   static class Action implements Runnable {
-    private final BiFunction<Long, TimeUnit, Future<Void>> dispose;
-    private long timeout = 30L;
-    private TimeUnit timeUnit = TimeUnit.SECONDS;
+    private final Function<Duration, Future<Void>> dispose;
+    private Duration timeout = Duration.ofSeconds(30);
     private Future<Void> closeFuture;
-    private Action(BiFunction<Long, TimeUnit, Future<Void>> dispose) {
+    private Action(Function<Duration, Future<Void>> dispose) {
       this.dispose = dispose;
     }
     @Override
     public void run() {
-      closeFuture = dispose.apply(timeout, timeUnit);
+      closeFuture = dispose.apply(timeout);
     }
   }
 
@@ -48,7 +53,7 @@ public class CleanableHttpClient implements HttpClientInternal {
   private final Cleaner.Cleanable cleanable;
   private final Action action;
 
-  public CleanableHttpClient(HttpClientInternal delegate, Cleaner cleaner, BiFunction<Long, TimeUnit, Future<Void>> dispose) {
+  public CleanableHttpClient(HttpClientInternal delegate, Cleaner cleaner, Function<Duration, Future<Void>> dispose) {
     this.action = new Action(dispose);
     this.delegate = delegate;
     this.cleanable = cleaner.register(this, action);
@@ -65,15 +70,11 @@ public class CleanableHttpClient implements HttpClientInternal {
   }
 
   @Override
-  public Future<Void> shutdown(long timeout, TimeUnit unit) {
-    if (timeout < 0L) {
-      throw new IllegalArgumentException();
-    }
-    if (unit == null) {
+  public Future<Void> shutdown(Duration timeout) {
+    if (timeout.isNegative()) {
       throw new IllegalArgumentException();
     }
     action.timeout = timeout;
-    action.timeUnit = unit;
     cleanable.clean();
     return action.closeFuture;
   }
@@ -81,11 +82,6 @@ public class CleanableHttpClient implements HttpClientInternal {
   @Override
   public VertxInternal vertx() {
     return delegate.vertx();
-  }
-
-  @Override
-  public HttpClientOptions options() {
-    return delegate.options();
   }
 
   @Override
@@ -99,8 +95,33 @@ public class CleanableHttpClient implements HttpClientInternal {
   }
 
   @Override
-  public NetClientInternal netClient() {
-    return delegate.netClient();
+  public Function<HttpClientResponse, Future<RequestOptions>> redirectHandler() {
+    return delegate.redirectHandler();
+  }
+
+  @Override
+  public HttpClientTransport tcpTransport() {
+    return delegate.tcpTransport();
+  }
+
+  @Override
+  public HttpClientTransport quicTransport() {
+    return delegate.quicTransport();
+  }
+
+  @Override
+  public HttpClientInternal exceptionHandler(Handler<Throwable> handler) {
+    return delegate.exceptionHandler(handler);
+  }
+
+  @Override
+  public HttpClientOptions options() {
+    return delegate.options();
+  }
+
+  @Override
+  public HttpClientConfig config() {
+    return delegate.config();
   }
 
   @Override
@@ -109,12 +130,27 @@ public class CleanableHttpClient implements HttpClientInternal {
   }
 
   @Override
-  public void close(Promise<Void> completion) {
+  public void close(Completable<Void> completion) {
     delegate.close(completion);
   }
 
   @Override
   public Future<HttpClientConnection> connect(HttpConnectOptions options) {
     return delegate.connect(options);
+  }
+
+  @Override
+  public EndpointResolverInternal originResolver() {
+    return delegate.originResolver();
+  }
+
+  @Override
+  public EndpointResolverInternal resolver() {
+    return delegate.resolver();
+  }
+
+  @Override
+  public HttpClientInternal unwrap() {
+    return delegate;
   }
 }

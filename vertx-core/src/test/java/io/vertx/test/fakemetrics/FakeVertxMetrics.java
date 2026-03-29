@@ -11,15 +11,11 @@
 
 package io.vertx.test.fakemetrics;
 
-import io.vertx.core.Verticle;
 import io.vertx.core.Vertx;
 import io.vertx.core.datagram.DatagramSocketOptions;
-import io.vertx.core.http.HttpClientOptions;
-import io.vertx.core.http.HttpServerOptions;
+import io.vertx.core.http.*;
 import io.vertx.core.metrics.MetricsOptions;
-import io.vertx.core.net.NetClientOptions;
-import io.vertx.core.net.NetServerOptions;
-import io.vertx.core.net.SocketAddress;
+import io.vertx.core.net.*;
 import io.vertx.core.spi.metrics.*;
 
 /**
@@ -55,20 +51,31 @@ public class FakeVertxMetrics extends FakeMetricsBase implements VertxMetrics {
     return new FakeEventBusMetrics();
   }
 
-  public HttpServerMetrics<?, ?, ?> createHttpServerMetrics(HttpServerOptions options, SocketAddress localAddress) {
-    return new FakeHttpServerMetrics();
+  public HttpServerMetrics<?, ?> createHttpServerMetrics(HttpServerConfig config, SocketAddress tcpLocalAddress, SocketAddress udpLocalAddress) {
+    return new FakeHttpServerMetrics(tcpLocalAddress, udpLocalAddress);
   }
 
-  public HttpClientMetrics<?, ?, ?, Void> createHttpClientMetrics(HttpClientOptions options) {
+  public HttpClientMetrics<?, ?> createHttpClientMetrics(HttpClientOptions options) {
     return new FakeHttpClientMetrics(options.getMetricsName());
   }
 
-  public TCPMetrics<?> createNetServerMetrics(NetServerOptions options, SocketAddress localAddress) {
-    return new FakeTCPMetrics();
+  @Override
+  public HttpClientMetrics<?, ?> createHttpClientMetrics(HttpClientConfig options) {
+    ObservabilityConfig observabilityConfig = options.getObservabilityConfig();
+    return new FakeHttpClientMetrics(observabilityConfig != null ? observabilityConfig.getMetricsName() : null);
   }
 
-  public TCPMetrics<?> createNetClientMetrics(NetClientOptions options) {
-    return new FakeTCPMetrics();
+  public TransportMetrics<?> createTcpServerMetrics(TcpServerConfig config, String protocol, SocketAddress localAddress) {
+    return new FakeTCPMetrics(null, protocol);
+  }
+
+  public TransportMetrics<?> createTcpClientMetrics(TcpClientConfig config, String protocol) {
+    return new FakeTCPMetrics(config.getMetricsName(), protocol);
+  }
+
+  @Override
+  public TransportMetrics<?> createQuicEndpointMetrics(QuicEndpointConfig config, String protocol, SocketAddress localAddress) {
+    return new FakeQuicEndpointMetrics(config.getMetricsName(), protocol);
   }
 
   public DatagramSocketMetrics createDatagramSocketMetrics(DatagramSocketOptions options) {
@@ -76,8 +83,8 @@ public class FakeVertxMetrics extends FakeMetricsBase implements VertxMetrics {
   }
 
   @Override
-  public PoolMetrics<?> createPoolMetrics(String poolType, String poolName, int maxPoolSize) {
-    return new FakePoolMetrics(poolName, maxPoolSize);
+  public PoolMetrics<?, ?> createPoolMetrics(String type, String name, int maxSize) {
+    return new FakePoolMetrics(name, maxSize);
   }
 
   @Override

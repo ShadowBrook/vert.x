@@ -11,13 +11,14 @@
 
 package io.vertx.core.http.impl;
 
-import io.netty.buffer.ByteBuf;
+import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.multipart.HttpPostRequestEncoder;
 import io.vertx.codegen.annotations.Nullable;
 import io.vertx.core.*;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.internal.buffer.BufferInternal;
 import io.vertx.core.http.*;
-import io.vertx.core.http.impl.headers.HeadersMultiMap;
 import io.vertx.core.impl.Arguments;
 import io.vertx.core.internal.logging.Logger;
 import io.vertx.core.internal.logging.LoggerFactory;
@@ -26,6 +27,7 @@ import io.vertx.core.net.ProxyOptions;
 import io.vertx.core.net.ProxyType;
 
 import java.util.Base64;
+import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
 
@@ -33,15 +35,6 @@ import static io.vertx.core.http.HttpHeaders.CONTENT_LENGTH;
 import static io.vertx.core.http.impl.HttpClientImpl.ABS_URI_START_PATTERN;
 
 /**
- * This class is optimised for performance when used on the same event loop that is passed to the handler with.
- * However it can be used safely from other threads.
- *
- * The internal state is protected using the synchronized keyword. If always used on the same event loop, then
- * we benefit from biased locking which makes the overhead of synchronized near zero.
- *
- * This class uses {@code this} for synchronization purpose. The {@link #client}  or{@link #stream} instead are
- * called must not be called under this lock to avoid deadlocks.
- *
  * @author <a href="http://tfox.org">Tim Fox</a>
  */
 public class HttpClientRequestImpl extends HttpClientRequestBase implements HttpClientRequest {
@@ -56,29 +49,31 @@ public class HttpClientRequestImpl extends HttpClientRequestBase implements Http
   private Handler<Void> drainHandler;
   private Handler<Throwable> exceptionHandler;
   private Function<HttpClientResponse, Future<HttpClientRequest>> redirectHandler;
-  private boolean ended;
   private boolean followRedirects;
   private int maxRedirects;
   private int numberOfRedirections;
-  private HeadersMultiMap headers;
+  private final MultiMap headers;
+  private boolean trailersSent;
+  private boolean headersSent;
   private StreamPriority priority;
-  private boolean headWritten;
   private boolean isConnect;
   private String traceOperation;
 
-  HttpClientRequestImpl(HttpConnection connection, HttpClientStream stream) {
-    super(connection, stream, stream.getContext().promise(), HttpMethod.GET, "/");
+  public HttpClientRequestImpl(HttpConnection connection, HttpClientStream stream) {
+    super(connection, stream, stream.context().promise(), HttpMethod.GET, "/");
     this.chunked = false;
     this.endPromise = context.promise();
     this.endFuture = endPromise.future();
     this.priority = HttpUtils.DEFAULT_STREAM_PRIORITY;
     this.numberOfRedirections = 0;
+    this.headers = stream.connection().newHttpRequestHeaders();
 
     //
     stream.continueHandler(this::handleContinue);
     stream.earlyHintsHandler(this::handleEarlyHints);
     stream.drainHandler(this::handleDrained);
     stream.exceptionHandler(this::handleException);
+    stream.resetHandler(this::handleReset);
   }
 
   public void init(RequestOptions options) {
@@ -86,7 +81,7 @@ public class HttpClientRequestImpl extends HttpClientRequestBase implements Http
     if (headers != null) {
       headers().setAll(headers);
     }
-    HttpClientConnectionInternal conn = stream.connection();
+    HttpClientConnection conn = stream.connection();
     boolean useSSL = conn.isSsl();
     String requestURI = options.getURI();
     HttpMethod method = options.getMethod();
@@ -114,6 +109,10 @@ public class HttpClientRequestImpl extends HttpClientRequestBase implements Http
       // Maybe later ?
       idleTimeout(idleTimeout);
     }
+  }
+
+  void handleReset(long code) {
+    handleException(new StreamResetException(code));
   }
 
   @Override
@@ -167,7 +166,7 @@ public class HttpClientRequestImpl extends HttpClientRequestBase implements Http
   @Override
   public synchronized HttpClientRequestImpl setChunked(boolean chunked) {
     checkEnded();
-    if (headWritten) {
+    if (headersSent) {
       throw new IllegalStateException("Cannot set chunked after data has been written on request");
     }
     // HTTP 1.0 does not support chunking so we ignore this if HTTP 1.0
@@ -183,10 +182,7 @@ public class HttpClientRequestImpl extends HttpClientRequestBase implements Http
   }
 
   @Override
-  public synchronized MultiMap headers() {
-    if (headers == null) {
-      headers = HeadersMultiMap.httpHeaders();
-    }
+  public MultiMap headers() {
     return headers;
   }
 
@@ -207,7 +203,7 @@ public class HttpClientRequestImpl extends HttpClientRequestBase implements Http
   @Override
   public synchronized HttpClientRequest setWriteQueueMaxSize(int maxSize) {
     checkEnded();
-    stream.doSetWriteQueueMaxSize(maxSize);
+    stream.setWriteQueueMaxSize(maxSize);
     return this;
   }
 
@@ -216,7 +212,7 @@ public class HttpClientRequestImpl extends HttpClientRequestBase implements Http
     synchronized (this) {
       checkEnded();
     }
-    return stream.isNotWritable();
+    return !stream.isWritable();
   }
 
   @Override
@@ -275,6 +271,50 @@ public class HttpClientRequestImpl extends HttpClientRequestBase implements Http
   }
 
   @Override
+  public Future<HttpClientResponse> send(ClientForm body) {
+    ClientMultipartFormImpl impl = (ClientMultipartFormImpl) body;
+    String contentType = headers != null ? headers.get(HttpHeaders.CONTENT_TYPE) : null;
+    boolean multipartMixed = impl.mixed();
+    HttpPostRequestEncoder.EncoderMode encoderMode = multipartMixed ? HttpPostRequestEncoder.EncoderMode.RFC1738 : HttpPostRequestEncoder.EncoderMode.HTML5;
+    ClientMultipartFormUpload form;
+    try {
+      boolean multipart;
+      if (contentType == null) {
+        multipart = impl.isMultipart();
+        contentType = multipart ? HttpHeaders.MULTIPART_FORM_DATA.toString() : HttpHeaders.APPLICATION_X_WWW_FORM_URLENCODED.toString();
+        putHeader(HttpHeaderNames.CONTENT_TYPE, contentType);
+      } else {
+        if (contentType.equalsIgnoreCase(HttpHeaders.APPLICATION_X_WWW_FORM_URLENCODED.toString())) {
+          if (impl.isMultipart()) {
+            throw new IllegalStateException("Multipart form requires multipart/form-data content type instead of "
+              + HttpHeaders.APPLICATION_X_WWW_FORM_URLENCODED);
+          }
+          multipart = false;
+        } else if (contentType.equalsIgnoreCase(HttpHeaders.MULTIPART_FORM_DATA.toString())) {
+          multipart = true;
+        } else {
+          throw new IllegalStateException("Sending form requires multipart/form-data or "
+            + HttpHeaders.APPLICATION_X_WWW_FORM_URLENCODED + " content type instead of " + contentType);
+        }
+      }
+      form = new ClientMultipartFormUpload(context, impl, multipart, encoderMode);
+    } catch (Exception e) {
+      reset(0, e);
+      return response();
+    }
+    for (Map.Entry<String, String> header : form.headers()) {
+      if (header.getKey().equalsIgnoreCase(CONTENT_LENGTH.toString())) {
+        if (Integer.parseInt(header.getValue()) < 0) {
+          // Bug ?
+          continue;
+        }
+      }
+      putHeader(header.getKey(), header.getValue());
+    }
+    return send(form);
+  }
+
+  @Override
   public Future<Void> sendHead() {
     checkEnded();
     return doWrite(null, false, false);
@@ -321,7 +361,7 @@ public class HttpClientRequestImpl extends HttpClientRequestBase implements Http
     synchronized (this) {
       checkEnded();
     }
-    return stream.writeFrame(type, flags, ((BufferInternal)payload).getByteBuf());
+    return stream.writeFrame(type, flags, payload);
   }
 
   private void handleDrained(Void v) {
@@ -335,7 +375,7 @@ public class HttpClientRequestImpl extends HttpClientRequestBase implements Http
     context.dispatch(handler);
   }
 
-  private void handleNextRequest(HttpClientRequest next, Handler<AsyncResult<HttpClientResponse>> handler, long timeoutMs) {
+  private void handleNextRequest(HttpClientRequest next, Promise<HttpClientResponse> handler, long timeoutMs) {
     next.response().onComplete(handler);
     next.exceptionHandler(exceptionHandler());
     exceptionHandler(null);
@@ -361,7 +401,7 @@ public class HttpClientRequestImpl extends HttpClientRequestBase implements Http
       handler = continueHandler;
     }
     if (handler != null) {
-      handler.handle(null);
+      context.dispatch(null, handler);
     }
   }
 
@@ -380,7 +420,13 @@ public class HttpClientRequestImpl extends HttpClientRequestBase implements Http
     if (followRedirects && numberOfRedirections < maxRedirects && statusCode >= 300 && statusCode < 400) {
       Function<HttpClientResponse, Future<HttpClientRequest>> handler = redirectHandler;
       if (handler != null) {
-        Future<HttpClientRequest> next = handler.apply(resp);
+        ContextInternal prev = context.beginDispatch();
+        Future<HttpClientRequest> next;
+        try {
+          next = handler.apply(resp);
+        } finally {
+          context.endDispatch(prev);
+        }
         if (next != null) {
           resp
             .end()
@@ -401,18 +447,21 @@ public class HttpClientRequestImpl extends HttpClientRequestBase implements Http
 
   @Override
   public Future<Void> end(String chunk) {
-    return write(BufferInternal.buffer(chunk).getByteBuf(), true);
+    return write(BufferInternal.buffer(chunk), true);
   }
 
   @Override
   public Future<Void> end(String chunk, String enc) {
     Objects.requireNonNull(enc, "no null encoding accepted");
-    return write(BufferInternal.buffer(chunk, enc).getByteBuf(), true);
+    return write(BufferInternal.buffer(chunk, enc), true);
   }
 
   @Override
   public Future<Void> end(Buffer chunk) {
-    return write(((BufferInternal)chunk).getByteBuf(), true);
+    if (chunk == null) {
+      throw new NullPointerException("no null chunk accepted");
+    }
+    return write(chunk, true);
   }
 
   @Override
@@ -422,29 +471,31 @@ public class HttpClientRequestImpl extends HttpClientRequestBase implements Http
 
   @Override
   public Future<Void> write(Buffer chunk) {
-    ByteBuf buf = ((BufferInternal)chunk).getByteBuf();
-    return write(buf, false);
+    if (chunk == null) {
+      throw new NullPointerException("no null chunk accepted");
+    }
+    return write(chunk, false);
   }
 
   @Override
   public Future<Void> write(String chunk) {
-    return write(BufferInternal.buffer(chunk).getByteBuf(), false);
+    return write(BufferInternal.buffer(chunk), false);
   }
 
   @Override
   public Future<Void> write(String chunk, String enc) {
     Objects.requireNonNull(enc, "no null encoding accepted");
-    return write(BufferInternal.buffer(chunk, enc).getByteBuf(), false);
+    return write(BufferInternal.buffer(chunk, enc), false);
   }
 
   private boolean requiresContentLength() {
-    return !chunked && (headers == null || !headers.contains(CONTENT_LENGTH)) && !isConnect;
+    return !chunked && !headers.contains(CONTENT_LENGTH) && !isConnect;
   }
 
-  private Future<Void> write(ByteBuf buff, boolean end) {
+  private Future<Void> write(Buffer buff, boolean end) {
     if (end) {
       if (buff != null && requiresContentLength()) {
-        headers().set(CONTENT_LENGTH, String.valueOf(buff.readableBytes()));
+        headers().set(CONTENT_LENGTH, HttpUtils.positiveLongToString(buff.length()));
       }
     } else if (requiresContentLength()) {
       throw new IllegalStateException("You must set the Content-Length header to be the total size of the message "
@@ -453,23 +504,25 @@ public class HttpClientRequestImpl extends HttpClientRequestBase implements Http
     return doWrite(buff, end, false);
   }
 
-  private Future<Void> doWrite(ByteBuf buff, boolean end, boolean connect) {
+  private Future<Void> doWrite(Buffer buff, boolean end, boolean connect) {
     boolean writeHead;
     boolean writeEnd;
     synchronized (this) {
-      if (ended) {
+      if (reset != null) {
+        return context.failedFuture(reset);
+      }
+      if (trailersSent) {
         return context.failedFuture(new IllegalStateException("Request already complete"));
       }
-      checkResponseHandler();
-      if (!headWritten) {
-        headWritten = true;
+      if (!headersSent) {
+        headersSent = true;
         isConnect = connect;
         writeHead = true;
       } else {
         writeHead = false;
       }
       writeEnd = !isConnect && end;
-      ended = end;
+      trailersSent = end;
     }
 
     Future<Void> future;
@@ -479,13 +532,13 @@ public class HttpClientRequestImpl extends HttpClientRequestBase implements Http
       if (uri.isEmpty()) {
         uri = "/";
       }
-      HttpRequestHead head = new HttpRequestHead(method, uri, headers, authority(), absoluteURI(), traceOperation);
+      HttpRequestHead head = new HttpRequestHead(ssl ? "https" : "http", method, uri, headers, authority(), absoluteURI(), traceOperation);
       future = stream.writeHead(head, chunked, buff, writeEnd, priority, connect);
     } else {
       if (buff == null && !end) {
         throw new IllegalArgumentException();
       }
-      future = stream.writeBuffer(buff, writeEnd);
+      future = stream.writeChunk(buff, writeEnd);
     }
     if (end) {
       tryComplete();
@@ -494,22 +547,14 @@ public class HttpClientRequestImpl extends HttpClientRequestBase implements Http
   }
 
   private void checkEnded() {
-    if (ended) {
+    if (trailersSent) {
       throw new IllegalStateException("Request already complete");
     }
   }
 
-  private void checkResponseHandler() {
-/*
-    if (stream == null && !connecting && responsePromise.future().getHandler() == null) {
-      throw new IllegalStateException("You must set a response handler before connecting to the server");
-    }
-*/
-  }
-
   @Override
   public synchronized HttpClientRequest setStreamPriority(StreamPriority priority) {
-    if (headWritten) {
+    if (headersSent) {
       stream.updatePriority(priority);
     } else {
       this.priority = priority;

@@ -10,8 +10,8 @@
  */
 package io.vertx.core.impl;
 
-import io.vertx.core.ThreadingModel;
-import io.vertx.core.internal.ContextInternal;
+import io.vertx.core.Handler;
+import io.vertx.core.internal.*;
 import io.vertx.core.spi.context.storage.AccessMode;
 import io.vertx.core.spi.context.storage.ContextLocal;
 
@@ -31,12 +31,12 @@ abstract class ContextBase implements ContextInternal {
   }
 
   public ContextInternal beginDispatch() {
-    VertxImpl vertx = (VertxImpl) owner();
+    VertxImpl vertx = owner();
     return vertx.beginDispatch(this);
   }
 
   public void endDispatch(ContextInternal previous) {
-    VertxImpl vertx = (VertxImpl) owner();
+    VertxImpl vertx = owner();
     vertx.endDispatch(previous);
   }
 
@@ -68,4 +68,64 @@ abstract class ContextBase implements ContextInternal {
     }
     accessMode.put(locals, index, value);
   }
+
+  @Override
+  public final boolean inThread() {
+    return executor().inThread();
+  }
+
+  @Override
+  public final <T> void emit(T argument, Handler<T> task) {
+    if (executor().inThread()) {
+      ContextInternal prev = beginDispatch();
+      try {
+        task.handle(argument);
+      } catch (Throwable t) {
+        reportException(t);
+      } finally {
+        endDispatch(prev);
+      }
+    } else {
+      executor().execute(() -> emit(argument, task));
+    }
+  }
+
+  @Override
+  public final void execute(Runnable task) {
+    if (executor().inThread()) {
+      task.run();
+    } else {
+      executor().execute(task);
+    }
+  }
+
+  /**
+   * <ul>
+   *   <li>When the current thread is event-loop thread of this context the implementation will execute the {@code task} directly</li>
+   *   <li>When the current thread is a worker thread of this context the implementation will execute the {@code task} directly</li>
+   *   <li>Otherwise the task will be scheduled on the context thread for execution</li>
+   * </ul>
+   */
+  @Override
+  public final <T> void execute(T argument, Handler<T> task) {
+    if (executor().inThread()) {
+      task.handle(argument);
+    } else {
+      executor().execute(() -> task.handle(argument));
+    }
+  }
+
+  @Override
+  public abstract VertxImpl owner();
+
+  @Override
+  public ContextBuilder toBuilder() {
+      return new ContextBuilderImpl(owner())
+        .withCloseFuture(closeFuture())
+        .withEventLoop(nettyEventLoop())
+        .withThreadingModel(threadingModel())
+        .withDeploymentContext(deployment())
+        .withWorkerPool(workerPool())
+        .withClassLoader(classLoader());
+    }
 }

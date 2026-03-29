@@ -23,8 +23,11 @@ import io.vertx.core.json.JsonObject;
 import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetServer;
 import io.vertx.core.net.SocketAddress;
+import io.vertx.core.net.TcpConfig;
 import io.vertx.core.spi.VertxMetricsFactory;
+import io.vertx.core.spi.VertxTracerFactory;
 import io.vertx.core.spi.cluster.ClusterManager;
+import io.vertx.core.transport.Transport;
 
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
@@ -49,8 +52,7 @@ public class CoreExamples {
   public void example4(HttpServerRequest request) {
     HttpServerResponse response = request.response();
     response.putHeader("Content-Type", "text/plain");
-    response.write("some text");
-    response.end();
+    response.end("some text");
   }
 
   public void example5(Vertx vertx) {
@@ -111,9 +113,10 @@ public class CoreExamples {
     }
   }
 
-  public void vertxBuilder(VertxOptions options, VertxMetricsFactory metricsFactory) {
+  public void vertxBuilder(VertxOptions options, VertxMetricsFactory metricsFactory, VertxTracerFactory tracerFactory) {
     Vertx vertx = Vertx.builder()
       .with(options)
+      .withTracer(tracerFactory)
       .withMetrics(metricsFactory)
       .build();
   }
@@ -138,10 +141,6 @@ public class CoreExamples {
         System.out.println("Failure: " + ar.cause().getMessage());
       }
     });
-  }
-
-  public void promiseAsHandler() {
-    Future<String> greeting = Future.future(promise -> legacyGreetAsync(promise));
   }
 
   public void promiseCallbackOrder(Future<Void> future) {
@@ -233,28 +232,100 @@ public class CoreExamples {
     Future.join(Arrays.asList(future1, future2, future3));
   }
 
+  class MyOrderProcessorVerticle extends VerticleBase {
+
+  }
+
+  public void simplestVerticle() {
+    class MyVerticle extends VerticleBase {
+
+      // Called when verticle is deployed
+      public Future<?> start() throws Exception {
+        return super.start();
+      }
+
+      // Optional - called when verticle is un-deployed
+      public Future<?> stop() throws Exception {
+        return super.stop();
+      }
+    }
+  }
+
+  public void httpServerVerticle() {
+    class MyVerticle extends VerticleBase {
+
+      private HttpServer server;
+
+      @Override
+      public Future<?> start() {
+        server = vertx.createHttpServer().requestHandler(req -> {
+          req.response()
+            .putHeader("content-type", "text/plain")
+            .end("Hello from Vert.x!");
+        });
+
+        // Now bind the server:
+        return server.listen(8080);
+      }
+    }
+  }
+
+  public void oneLinerVerticle(Vertx vertx) {
+    Deployable verticle = context -> vertx
+      .createHttpServer()
+      .requestHandler(req -> req.response()
+        .putHeader("content-type", "text/plain")
+        .end("Hello from Vert.x!"))
+      .listen(8080);
+  }
+
+  public void verticleContract() {
+
+    class MyVerticle extends AbstractVerticle {
+      @Override
+      public void start(Promise<Void> startPromise) throws Exception {
+        Future<String> future = bindService();
+
+        // Requires to write
+        future.onComplete(ar -> {
+          if (ar.succeeded()) {
+            startPromise.complete();
+          } else {
+            startPromise.fail(ar.cause());
+          }
+        });
+
+        // Or
+        future
+          .<Void>mapEmpty()
+          .onComplete(startPromise);
+      }
+    }
+
+  }
+
+  static Future<String> bindService() {
+    throw new UnsupportedOperationException();
+  }
+
+
   public void example7_1(Vertx vertx) {
     DeploymentOptions options = new DeploymentOptions().setThreadingModel(ThreadingModel.WORKER);
-    vertx.deployVerticle("com.mycompany.MyOrderProcessorVerticle", options);
+    vertx.deployVerticle(new MyOrderProcessorVerticle(), options);
   }
 
   public void example7_2(Vertx vertx) {
     DeploymentOptions options = new DeploymentOptions().setThreadingModel(ThreadingModel.VIRTUAL_THREAD);
-    vertx.deployVerticle("com.mycompany.MyOrderProcessorVerticle", options);
+    vertx.deployVerticle(new MyOrderProcessorVerticle(), options);
   }
 
   public void example8(Vertx vertx) {
 
-    Verticle myVerticle = new MyVerticle();
+    VerticleBase myVerticle = new MyVerticle();
     vertx.deployVerticle(myVerticle);
   }
 
-  class MyVerticle extends AbstractVerticle {
-
-    @Override
-    public void start() throws Exception {
-      super.start();
-    }
+  static class MyVerticle extends VerticleBase {
   }
 
   public void example9(Vertx vertx) {
@@ -262,17 +333,11 @@ public class CoreExamples {
     // Deploy a Java verticle - the name is the fully qualified class name of the verticle class
     vertx.deployVerticle("com.mycompany.MyOrderProcessorVerticle");
 
-    // Deploy a JavaScript verticle
-    vertx.deployVerticle("verticles/myverticle.js");
-
-    // Deploy a Ruby verticle verticle
-    vertx.deployVerticle("verticles/my_verticle.rb");
-
   }
 
   public void example10(Vertx vertx) {
     vertx
-      .deployVerticle("com.mycompany.MyOrderProcessorVerticle")
+      .deployVerticle(new MyOrderProcessorVerticle())
       .onComplete(res -> {
         if (res.succeeded()) {
           System.out.println("Deployment id is: " + res.result());
@@ -296,14 +361,14 @@ public class CoreExamples {
 
   public void example12(Vertx vertx) {
     DeploymentOptions options = new DeploymentOptions().setInstances(16);
-    vertx.deployVerticle("com.mycompany.MyOrderProcessorVerticle", options);
+    vertx.deployVerticle(() -> new MyOrderProcessorVerticle(), options);
   }
 
 
   public void example13(Vertx vertx) {
     JsonObject config = new JsonObject().put("name", "tim").put("directory", "/blah");
     DeploymentOptions options = new DeploymentOptions().setConfig(config);
-    vertx.deployVerticle("com.mycompany.MyOrderProcessorVerticle", options);
+    vertx.deployVerticle(new MyOrderProcessorVerticle(), options);
   }
 
   public void example15(Vertx vertx) {
@@ -324,6 +389,20 @@ public class CoreExamples {
 
   public void example17(Vertx vertx, long timerID) {
     vertx.cancelTimer(timerID);
+  }
+
+  public void timerExample(Vertx vertx) {
+    // Create a timer
+    Future<String> timer = vertx
+      .timer(10, TimeUnit.SECONDS)
+      .map(v -> "Success");
+
+    timer.onSuccess(value -> {
+      System.out.println("Timer fired: " + value);
+    });
+    timer.onFailure(cause -> {
+      System.out.println("Timer cancelled: " + cause.getMessage());
+    });
   }
 
   public void example18(String className, Exception exception) {
@@ -397,7 +476,7 @@ public class CoreExamples {
   }
 
   public void deployVerticleWithDifferentWorkerPool(Vertx vertx) {
-    vertx.deployVerticle("the-verticle", new DeploymentOptions().setWorkerPoolName("the-specific-pool"));
+    vertx.deployVerticle(new MyOrderProcessorVerticle(), new DeploymentOptions().setWorkerPoolName("the-specific-pool"));
   }
 
   public void configureNative() {
@@ -410,47 +489,48 @@ public class CoreExamples {
     System.out.println("Running with native: " + usingNative);
   }
 
-  public void configureLinuxOptions(Vertx vertx, boolean fastOpen, boolean cork, boolean quickAck, boolean reusePort) {
+  public void configureTransport() {
+
+    // Use epoll/kqueue/io_uring native transport depending on OS
+    Transport transport = Transport.nativeTransport();
+
+    // Or use a very specific transport
+    transport = Transport.EPOLL;
+
+    Vertx vertx = Vertx.builder()
+      .withTransport(transport)
+      .build();
+  }
+
+  public void configureLinuxOptions(Vertx vertx, boolean fastOpen, boolean cork, boolean quickAck, boolean reusePort, int tcpUserTimeout) {
     // Available on Linux
     vertx.createHttpServer(new HttpServerOptions()
       .setTcpFastOpen(fastOpen)
       .setTcpCork(cork)
       .setTcpQuickAck(quickAck)
       .setReusePort(reusePort)
+      .setTcpUserTimeout(tcpUserTimeout)
     );
   }
 
   public void configureBSDOptions(Vertx vertx, boolean reusePort) {
+    HttpServerConfig config = new HttpServerConfig();
+
+    TcpConfig tcpConfig = config
+      .getTcpConfig()
+      .getTransportConfig();
+
     // Available on BSD
-    vertx.createHttpServer(new HttpServerOptions().setReusePort(reusePort));
-  }
+    tcpConfig
+      .setReusePort(reusePort);
 
-  public void tcpServerWithDomainSockets(Vertx vertx) {
-    // Only available on BSD and Linux
-    vertx.createNetServer().connectHandler(so -> {
-      // Handle application
-    }).listen(SocketAddress.domainSocketAddress("/var/tmp/myservice.sock"));
-  }
-
-  public void httpServerWithDomainSockets(Vertx vertx) {
-    vertx.createHttpServer()
-      .requestHandler(req -> {
-        // Handle application
-      })
-      .listen(SocketAddress.domainSocketAddress("/var/tmp/myservice.sock"))
-      .onComplete(ar -> {
-        if (ar.succeeded()) {
-          // Bound to socket
-        } else {
-          ar.cause().printStackTrace();
-        }
-      });
+    vertx.createHttpServer(config);
   }
 
   public void tcpClientWithDomainSockets(Vertx vertx) {
     NetClient netClient = vertx.createNetClient();
 
-    // Only available on BSD and Linux
+    // Only available when running on JDK16+, or using a native transport
     SocketAddress addr = SocketAddress.domainSocketAddress("/var/tmp/myservice.sock");
 
     // Connect to the server
@@ -460,27 +540,8 @@ public class CoreExamples {
         if (ar.succeeded()) {
           // Connected
         } else {
-          ar.cause().printStackTrace();
+          // Handle failure
         }
-      });
-  }
-
-  public void httpClientWithDomainSockets(Vertx vertx) {
-    HttpClient httpClient = vertx.createHttpClient();
-
-    // Only available on BSD and Linux
-    SocketAddress addr = SocketAddress.domainSocketAddress("/var/tmp/myservice.sock");
-
-    // Send request to the server
-    httpClient.request(new RequestOptions()
-      .setServer(addr)
-      .setHost("localhost")
-      .setPort(8080)
-      .setURI("/"))
-      .onSuccess(request -> {
-        request.send().onComplete(response -> {
-          // Process response
-        });
       });
   }
 }

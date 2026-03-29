@@ -128,31 +128,40 @@ public class NamedWorkerPoolTest extends VertxTestBase {
   }
 
   @Test
-  public void testUseDifferentExecutorWithSameTaskQueue() throws Exception {
+  public void testUseDifferentExecutorWithSameTaskQueue() {
     int count = 10;
     waitFor(count);
-    vertx.deployVerticle(new AbstractVerticle() {
-      @Override
-      public void start() throws Exception {
-        WorkerExecutor exec = vertx.createSharedWorkerExecutor("vert.x-the-executor");
-        Thread startThread = Thread.currentThread();
-        AtomicReference<Thread> currentThread = new AtomicReference<>();
-        for (int i = 0;i < count;i++) {
-          int val = i;
-          exec.executeBlocking(() -> {
-            Thread current = Thread.currentThread();
-            assertNotSame(startThread, current);
-            if (val == 0) {
-              assertNull(currentThread.getAndSet(current));
-            } else {
-              assertSame(current, currentThread.get());
-            }
-            return null;
-          }, true).onComplete(onSuccess(v -> complete()));
-        }
+    WorkerExecutor[] executors = new WorkerExecutor[count];
+    for (int i = 0;i < count;i++) {
+      executors[i] = vertx.createSharedWorkerExecutor("vert.x-the-executor");
+    }
+    vertx.runOnContext(v1 -> {
+      AtomicReference<Thread> currentThread = new AtomicReference<>();
+      CountDownLatch latch = new CountDownLatch(1);
+      for (int i = 0;i < count;i++) {
+        int val = i;
+        executors[i].executeBlocking(() -> {
+          Thread current = Thread.currentThread();
+          if (val == 0) {
+            assertNull(currentThread.getAndSet(current));
+            awaitLatch(latch);
+          } else {
+            assertSame("i = " + val, current, currentThread.get());
+          }
+          return null;
+        }, true).onComplete(onSuccess(v2 -> complete()));
+        vertx.runOnContext(v -> {
+          latch.countDown();
+        });
       }
-    }, new DeploymentOptions().setThreadingModel(ThreadingModel.WORKER)).onComplete(onSuccess(v -> {}));
-    await();
+    });
+    try {
+      await();
+    } finally {
+      for (WorkerExecutor exec : executors) {
+        exec.close().await();
+      }
+    }
   }
 
   @Test
@@ -269,28 +278,30 @@ public class NamedWorkerPoolTest extends VertxTestBase {
   }
 
   @Test
-  public void testDeployUsingNamedPool() {
-    AtomicReference<Thread> thread = new AtomicReference<>();
+  public void testDeployUsingNamedPool() throws Exception {
     String poolName = "vert.x-" + TestUtils.randomAlphaString(10);
-    Promise<Void> undeployed = Promise.promise();
+    Promise<Thread> promise = Promise.promise();
     vertx.deployVerticle(new AbstractVerticle() {
       @Override
       public void start() {
         vertx.runOnContext(v1 -> {
           vertx.executeBlocking(() -> {
-            thread.set(Thread.currentThread());
+            Thread current = Thread.currentThread();
             assertTrue(Context.isOnVertxThread());
             assertTrue(Context.isOnWorkerThread());
             assertFalse(Context.isOnEventLoopThread());
-            assertTrue(Thread.currentThread().getName().startsWith(poolName + "-"));
-            return null;
-          }).onComplete(onSuccess(v2 -> {
-            vertx.undeploy(context.deploymentID()).onComplete(undeployed);
+            assertTrue(current.getName().startsWith(poolName + "-"));
+            return current;
+          }).onComplete(onSuccess(current -> {
+            vertx.undeploy(context.deploymentID()).onComplete(onSuccess(v2 -> {
+              promise.complete(current);
+            }));
           }));
         });
       }
     }, new DeploymentOptions().setWorkerPoolName(poolName));
-    assertWaitUntil(() -> thread.get() != null && thread.get().getState() == Thread.State.TERMINATED);
+    Thread thread = promise.future().await(20, SECONDS);
+    assertWaitUntil(() -> thread.getState() == Thread.State.TERMINATED, 20_000, "Unexpected thread state " + thread.getState());
   }
 
   @Test
@@ -335,21 +346,20 @@ public class NamedWorkerPoolTest extends VertxTestBase {
   @Test
   public void testDeployWorkerUsingNamedPool() throws Exception {
     AtomicReference<Thread> thread = new AtomicReference<>();
-    AtomicReference<String> deployment = new AtomicReference<>();
     String poolName = "vert.x-" + TestUtils.randomAlphaString(10);
-    vertx.deployVerticle(new AbstractVerticle() {
+    String deploymentID = vertx.deployVerticle(new VerticleBase() {
       @Override
-      public void start() throws Exception {
+      public Future<?> start() throws Exception {
         thread.set(Thread.currentThread());
         assertTrue(Context.isOnVertxThread());
         assertTrue(Context.isOnWorkerThread());
         assertFalse(Context.isOnEventLoopThread());
         assertTrue(Thread.currentThread().getName().startsWith(poolName + "-"));
-        context.runOnContext(v -> {
-          vertx.undeploy(context.deploymentID());
-        });
+        return super.start();
       }
-    }, new DeploymentOptions().setThreadingModel(ThreadingModel.WORKER).setWorkerPoolName(poolName)).onComplete(onSuccess(deployment::set));
+    }, new DeploymentOptions().setThreadingModel(ThreadingModel.WORKER).setWorkerPoolName(poolName))
+      .await();
+    vertx.undeploy(deploymentID).await();
     assertWaitUntil(() -> thread.get() != null && thread.get().getState() == Thread.State.TERMINATED);
   }
 

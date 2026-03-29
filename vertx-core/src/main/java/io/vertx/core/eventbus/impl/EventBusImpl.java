@@ -11,11 +11,9 @@
 
 package io.vertx.core.eventbus.impl;
 
-import io.vertx.core.Future;
-import io.vertx.core.Handler;
-import io.vertx.core.MultiMap;
-import io.vertx.core.Promise;
+import io.vertx.core.*;
 import io.vertx.core.eventbus.*;
+import io.vertx.core.impl.Arguments;
 import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.internal.VertxInternal;
 import io.vertx.core.impl.utils.ConcurrentCyclicSequence;
@@ -44,8 +42,8 @@ public class EventBusImpl implements EventBusInternal, MetricsProvider {
   private static final AtomicReferenceFieldUpdater<EventBusImpl, Handler[]> OUTBOUND_INTERCEPTORS_UPDATER = AtomicReferenceFieldUpdater.newUpdater(EventBusImpl.class, Handler[].class, "outboundInterceptors");
   private static final AtomicReferenceFieldUpdater<EventBusImpl, Handler[]> INBOUND_INTERCEPTORS_UPDATER = AtomicReferenceFieldUpdater.newUpdater(EventBusImpl.class, Handler[].class, "inboundInterceptors");
 
-  private volatile Handler<DeliveryContext>[] outboundInterceptors = new Handler[0];
-  private volatile Handler<DeliveryContext>[] inboundInterceptors = new Handler[0];
+  private volatile Handler<DeliveryContext<?>>[] outboundInterceptors = new Handler[0];
+  private volatile Handler<DeliveryContext<?>>[] inboundInterceptors = new Handler[0];
   private final AtomicLong replySequence = new AtomicLong(0);
   protected final VertxInternal vertx;
   protected final EventBusMetrics metrics;
@@ -54,7 +52,7 @@ public class EventBusImpl implements EventBusInternal, MetricsProvider {
   protected volatile boolean started;
 
   public EventBusImpl(VertxInternal vertx) {
-    VertxMetrics metrics = vertx.metricsSPI();
+    VertxMetrics metrics = vertx.metrics();
     this.vertx = vertx;
     this.metrics = metrics != null ? metrics.createEventBusMetrics() : null;
   }
@@ -83,11 +81,11 @@ public class EventBusImpl implements EventBusInternal, MetricsProvider {
     return this;
   }
 
-  Handler<DeliveryContext>[] inboundInterceptors() {
+  Handler<DeliveryContext<?>>[] inboundInterceptors() {
     return inboundInterceptors;
   }
 
-  Handler<DeliveryContext>[] outboundInterceptors() {
+  Handler<DeliveryContext<?>>[] outboundInterceptors() {
     return outboundInterceptors;
   }
 
@@ -170,10 +168,26 @@ public class EventBusImpl implements EventBusInternal, MetricsProvider {
   }
 
   @Override
+  public <T> MessageConsumer<T> consumer(MessageConsumerOptions options) {
+    checkStarted();
+    String address = options.getAddress();
+    Arguments.require(options.getAddress() != null, "Consumer address must not be null");
+    return new MessageConsumerImpl<>(vertx.getOrCreateContext(), this, address, options.isLocalOnly(), options.getMaxBufferedMessages());
+  }
+
+  @Override
+  public <T> MessageConsumer<T> consumer(MessageConsumerOptions options, Handler<Message<T>> handler) {
+    Objects.requireNonNull(handler, "handler");
+    MessageConsumer<T> consumer = consumer(options);
+    consumer.handler(handler);
+    return consumer;
+  }
+
+  @Override
   public <T> MessageConsumer<T> consumer(String address) {
     checkStarted();
     Objects.requireNonNull(address, "address");
-    return new MessageConsumerImpl<>(vertx.getOrCreateContext(), this, address, false);
+    return new MessageConsumerImpl<>(vertx.getOrCreateContext(), this, address, false, MessageConsumerOptions.DEFAULT_MAX_BUFFERED_MESSAGES);
   }
 
   @Override
@@ -188,7 +202,7 @@ public class EventBusImpl implements EventBusInternal, MetricsProvider {
   public <T> MessageConsumer<T> localConsumer(String address) {
     checkStarted();
     Objects.requireNonNull(address, "address");
-    return new MessageConsumerImpl<>(vertx.getOrCreateContext(), this, address, true);
+    return new MessageConsumerImpl<>(vertx.getOrCreateContext(), this, address, true, MessageConsumerOptions.DEFAULT_MAX_BUFFERED_MESSAGES);
   }
 
   @Override
@@ -261,24 +275,20 @@ public class EventBusImpl implements EventBusInternal, MetricsProvider {
     return msg;
   }
 
-  protected <T> Consumer<Promise<Void>> addRegistration(String address, HandlerRegistration<T> registration, boolean broadcast, boolean localOnly, Promise<Void> promise) {
+  protected <T> Consumer<Promise<Void>> addRegistration(String address, HandlerRegistration<T> registration, boolean broadcast, boolean localOnly, Completable<Void> promise) {
     HandlerHolder<T> holder = addLocalRegistration(address, registration, localOnly);
     if (broadcast) {
       onLocalRegistration(holder, promise);
     } else {
-      if (promise != null) {
-        promise.complete();
-      }
+      promise.succeed();
     }
     return p -> {
       removeRegistration(holder, broadcast, p);
     };
   }
 
-  protected <T> void onLocalRegistration(HandlerHolder<T> handlerHolder, Promise<Void> promise) {
-    if (promise != null) {
-      promise.complete();
-    }
+  protected <T> void onLocalRegistration(HandlerHolder<T> handlerHolder, Completable<Void> promise) {
+    promise.succeed();
   }
 
   private <T> HandlerHolder<T> addLocalRegistration(String address, HandlerRegistration<T> registration,
@@ -315,8 +325,8 @@ public class EventBusImpl implements EventBusInternal, MetricsProvider {
     }
   }
 
-  protected <T> void onLocalUnregistration(HandlerHolder<T> handlerHolder, Promise<Void> promise) {
-    promise.complete();
+  protected <T> void onLocalUnregistration(HandlerHolder<T> handlerHolder, Completable<Void> promise) {
+    promise.succeed();
   }
 
   private <T> void removeLocalRegistration(HandlerHolder<T> holder) {
@@ -333,11 +343,11 @@ public class EventBusImpl implements EventBusInternal, MetricsProvider {
     }
   }
 
-  protected <T> void sendReply(MessageImpl replyMessage, DeliveryOptions options, ReplyHandler<T> replyHandler) {
+  protected <T> void sendReply(MessageImpl<?, T> replyMessage, DeliveryOptions options, ReplyHandler<T> replyHandler) {
     if (replyMessage.address() == null) {
       throw new IllegalStateException("address not specified");
     } else {
-      sendOrPubInternal(new OutboundDeliveryContext<>(vertx.getOrCreateContext(), replyMessage, options, replyHandler));
+      sendOrPubInternal(new SendContext<>(vertx.getOrCreateContext(), replyMessage, options, replyHandler));
     }
   }
 
@@ -345,7 +355,7 @@ public class EventBusImpl implements EventBusInternal, MetricsProvider {
     sendLocally(message, writePromise);
   }
 
-  protected <T> void sendOrPub(OutboundDeliveryContext<T> sendContext) {
+  protected <T> void sendOrPub(SendContext<T> sendContext) {
     sendOrPub(sendContext.ctx, sendContext.message, sendContext.options, sendContext);
   }
 
@@ -422,22 +432,21 @@ public class EventBusImpl implements EventBusInternal, MetricsProvider {
     return handler;
   }
 
-  public <T> OutboundDeliveryContext<T> newSendContext(MessageImpl message, DeliveryOptions options,
-                                                       ReplyHandler<T> handler) {
-    return new OutboundDeliveryContext<>(vertx.getOrCreateContext(), message, options, handler);
+  <T> SendContext<T> newSendContext(MessageImpl<?, T> message, DeliveryOptions options, ReplyHandler<T> handler) {
+    return new SendContext<>(vertx.getOrCreateContext(), message, options, handler);
   }
 
-  public <T> void sendOrPubInternal(OutboundDeliveryContext<T> senderCtx) {
+  public <T> void sendOrPubInternal(SendContext<T> senderCtx) {
     checkStarted();
     senderCtx.bus = this;
     senderCtx.metrics = metrics;
-    senderCtx.next();
+    senderCtx.send();
   }
 
-  public <T> Future<Void> sendOrPubInternal(MessageImpl message, DeliveryOptions options,
+  <T> Future<Void> sendOrPubInternal(MessageImpl<?, T> message, DeliveryOptions options,
                                             ReplyHandler<T> handler) {
     checkStarted();
-    OutboundDeliveryContext<T> ctx = newSendContext(message, options, handler);
+    SendContext<T> ctx = newSendContext(message, options, handler);
     sendOrPubInternal(ctx);
     Future<Void> future = ctx.writePromise.future();
     if (message.send) {

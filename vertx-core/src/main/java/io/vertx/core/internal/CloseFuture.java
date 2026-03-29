@@ -12,6 +12,7 @@
 package io.vertx.core.internal;
 
 import io.vertx.core.Closeable;
+import io.vertx.core.Completable;
 import io.vertx.core.Future;
 import io.vertx.core.Promise;
 import io.vertx.core.internal.logging.Logger;
@@ -47,14 +48,15 @@ public class CloseFuture extends NestedCloseable implements Closeable {
   /**
    * Add a {@code child} closeable, notified when this instance is closed.
    *
-   * @param child the child closeable to add
+   * @param closeable the closeable to add
+   * @return whether the {@code closeable} could be added to the future
    */
-  public synchronized void add(Closeable child) {
+  public synchronized boolean add(Closeable closeable) {
     if (closed) {
-      throw new IllegalStateException();
+      return false;
     }
-    if (child instanceof NestedCloseable) {
-      NestedCloseable base = (NestedCloseable) child;
+    if (closeable instanceof NestedCloseable) {
+      NestedCloseable base = (NestedCloseable) closeable;
       synchronized (base) {
         if (base.owner != null) {
           throw new IllegalStateException();
@@ -65,7 +67,8 @@ public class CloseFuture extends NestedCloseable implements Closeable {
     if (children == null) {
       children = new HashMap<>();
     }
-    children.put(child, this);
+    children.put(closeable, this);
+    return true;
   }
 
   /**
@@ -178,7 +181,7 @@ public class CloseFuture extends NestedCloseable implements Closeable {
    *
    * @param promise called when all hooks have been executed
    */
-  public void close(Promise<Void> promise) {
+  public void close(Completable<Void> promise) {
     close().onComplete(promise);
   }
 }

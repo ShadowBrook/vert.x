@@ -12,35 +12,31 @@
 package io.vertx.core.eventbus.impl.clustered;
 
 import io.vertx.core.*;
-import io.vertx.core.buffer.Buffer;
-import io.vertx.core.eventbus.AddressHelper;
 import io.vertx.core.eventbus.DeliveryOptions;
 import io.vertx.core.eventbus.EventBusOptions;
 import io.vertx.core.eventbus.MessageCodec;
-import io.vertx.core.eventbus.impl.CodecManager;
-import io.vertx.core.eventbus.impl.EventBusImpl;
-import io.vertx.core.eventbus.impl.HandlerHolder;
-import io.vertx.core.eventbus.impl.HandlerRegistration;
-import io.vertx.core.eventbus.impl.MessageImpl;
+import io.vertx.core.eventbus.impl.*;
+import io.vertx.core.impl.utils.ConcurrentCyclicSequence;
 import io.vertx.core.internal.CloseFuture;
 import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.internal.VertxInternal;
 import io.vertx.core.internal.logging.Logger;
 import io.vertx.core.internal.logging.LoggerFactory;
-import io.vertx.core.impl.utils.ConcurrentCyclicSequence;
-import io.vertx.core.net.NetClient;
-import io.vertx.core.net.NetClientOptions;
-import io.vertx.core.net.NetServer;
-import io.vertx.core.net.NetServerOptions;
-import io.vertx.core.net.NetSocket;
-import io.vertx.core.net.impl.NetClientBuilder;
-import io.vertx.core.parsetools.RecordParser;
+import io.vertx.core.internal.net.NetSocketInternal;
+import io.vertx.core.net.*;
+import io.vertx.core.net.impl.tcp.NetClientBuilder;
+import io.vertx.core.internal.net.NetServerInternal;
 import io.vertx.core.spi.cluster.ClusterManager;
 import io.vertx.core.spi.cluster.NodeInfo;
-import io.vertx.core.spi.cluster.NodeSelector;
 import io.vertx.core.spi.cluster.RegistrationInfo;
+import io.vertx.core.spi.metrics.EventBusMetrics;
 import io.vertx.core.spi.metrics.VertxMetrics;
 
+import java.net.Inet6Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.net.SocketException;
+import java.util.Enumeration;
 import java.util.Iterator;
 import java.util.Objects;
 import java.util.UUID;
@@ -53,11 +49,9 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * @author <a href="http://tfox.org">Tim Fox</a>
  */
-public class ClusteredEventBus extends EventBusImpl {
+public final class ClusteredEventBus extends EventBusImpl {
 
   private static final Logger log = LoggerFactory.getLogger(ClusteredEventBus.class);
-
-  private static final Buffer PONG = Buffer.buffer(new byte[]{(byte) 1});
 
   private final EventBusOptions options;
   private final ClusterManager clusterManager;
@@ -65,12 +59,12 @@ public class ClusteredEventBus extends EventBusImpl {
   private final AtomicLong handlerSequence = new AtomicLong(0);
   private final NetClient client;
 
-  private final ConcurrentMap<String, ConnectionHolder> connections = new ConcurrentHashMap<>();
-  private final ContextInternal ebContext;
+  private final ConcurrentMap<String, OutboundConnection> outboundConnections = new ConcurrentHashMap<>();
+  private final ContextInternal context;
 
   private NodeInfo nodeInfo;
   private String nodeId;
-  private NetServer server;
+  private NetServerInternal server;
 
   public ClusteredEventBus(VertxInternal vertx, VertxOptions options, ClusterManager clusterManager, NodeSelector nodeSelector) {
     super(vertx);
@@ -82,21 +76,60 @@ public class ClusteredEventBus extends EventBusImpl {
     this.options = options.getEventBusOptions();
     this.clusterManager = clusterManager;
     this.nodeSelector = nodeSelector;
-    this.ebContext = vertx.createEventLoopContext(null, new CloseFuture(), null, Thread.currentThread().getContextClassLoader());
+    this.context = vertx.contextBuilder()
+      .withClassLoader(Thread.currentThread().getContextClassLoader())
+      .withCloseFuture(new CloseFuture())
+      .build();
     this.client = client;
   }
 
-  private NetClient createNetClient(VertxInternal vertx, NetClientOptions clientOptions) {
-    NetClientBuilder builder = new NetClientBuilder(vertx, clientOptions);
-    VertxMetrics metricsSPI = vertx.metricsSPI();
-    if (metricsSPI != null) {
-      builder.metrics(metricsSPI.createNetClientMetrics(clientOptions));
-    }
-    return builder.build();
+  CodecManager codecManager() {
+    return codecManager;
   }
 
-  NetClient client() {
-    return client;
+  EventBusMetrics<?> metrics() {
+    return metrics;
+  }
+
+  VertxInternal vertx() {
+    return vertx;
+  }
+
+  EventBusOptions options() {
+    return options;
+  }
+
+  /**
+   * Pick a default address for clustered event bus when none was provided by either the user or the cluster manager.
+   *
+   * This is used by Vert.x launcher.
+   */
+  public static String defaultAddress() {
+    Enumeration<NetworkInterface> nets;
+    try {
+      nets = NetworkInterface.getNetworkInterfaces();
+    } catch (SocketException e) {
+      return null;
+    }
+    NetworkInterface netinf;
+    while (nets.hasMoreElements()) {
+      netinf = nets.nextElement();
+
+      Enumeration<InetAddress> addresses = netinf.getInetAddresses();
+
+      while (addresses.hasMoreElements()) {
+        InetAddress address = addresses.nextElement();
+        if (!address.isAnyLocalAddress() && !address.isMulticastAddress()
+          && !(address instanceof Inet6Address)) {
+          return address.getHostAddress();
+        }
+      }
+    }
+    return null;
+  }
+
+  private NetClient createNetClient(VertxInternal vertx, NetClientOptions clientOptions) {
+    return new NetClientBuilder(vertx, clientOptions).build();
   }
 
   private NetServerOptions getServerOptions() {
@@ -107,43 +140,42 @@ public class ClusteredEventBus extends EventBusImpl {
   public void start(Promise<Void> promise) {
     NetServerOptions serverOptions = getServerOptions();
     server = vertx.createNetServer(serverOptions);
-    server.connectHandler(getServerHandler());
+    server.connectHandler(socket -> {
+      InboundConnection inboundConnection = new InboundConnection(this, socket);
+      inboundConnection.handler(this::deliverMessageLocally);
+      socket.handler(inboundConnection);
+    });
     int port = getClusterPort();
     String host = getClusterHost();
-    ebContext.runOnContext(v -> {
-      server.listen(port, host).flatMap(v2 -> {
-        int publicPort = getClusterPublicPort(server.actualPort());
-        String publicHost = getClusterPublicHost(host);
-        nodeInfo = new NodeInfo(publicHost, publicPort, options.getClusterNodeMetadata());
-        nodeId = clusterManager.getNodeId();
-        Promise<Void> setPromise = Promise.promise();
-        clusterManager.setNodeInfo(nodeInfo, setPromise);
-        return setPromise.future();
-      }).andThen(ar -> {
-        if (ar.succeeded()) {
-          started = true;
-          nodeSelector.eventBusStarted();
-        }
-      }).onComplete(promise);
-    });
+    server
+      .listen(context, SocketAddress.inetSocketAddress(port, host))
+      .flatMap(s -> {
+      int publicPort = getClusterPublicPort(server.actualPort());
+      String publicHost = getClusterPublicHost(host);
+      nodeInfo = new NodeInfo(publicHost, publicPort, options.getClusterNodeMetadata());
+      nodeId = clusterManager.getNodeId();
+      Promise<Void> setPromise = Promise.promise();
+      clusterManager.setNodeInfo(nodeInfo, setPromise);
+      return setPromise.future();
+    }).andThen(ar -> {
+      if (ar.succeeded()) {
+        started = true;
+        nodeSelector.eventBusStarted();
+      }
+    }).onComplete(promise);
   }
 
   @Override
   public void close(Promise<Void> promise) {
     Promise<Void> parentClose = Promise.promise();
     super.close(parentClose);
-    parentClose.future()
-      .transform(ar -> client.close())
-      .andThen(ar -> {
-        if (server != null) {
-          // TODO CLOSE SERVER TOO
-          // Close all outbound connections explicitly - don't rely on context hooks
-          for (ConnectionHolder holder : connections.values()) {
-            holder.close();
-          }
-        }
-      })
-      .onComplete(promise);
+    Future<Void> ret = parentClose
+      .future()
+      .eventually(client::close);
+    if (server != null) {
+      ret = ret.eventually(() -> server.close());
+    }
+    ret.onComplete(promise);
   }
 
   @Override
@@ -156,7 +188,7 @@ public class ClusteredEventBus extends EventBusImpl {
   }
 
   @Override
-  protected <T> void onLocalRegistration(HandlerHolder<T> handlerHolder, Promise<Void> promise) {
+  protected <T> void onLocalRegistration(HandlerHolder<T> handlerHolder, Completable<Void> promise) {
     RegistrationInfo registrationInfo = new RegistrationInfo(
       nodeId,
       handlerHolder.getSeq(),
@@ -171,15 +203,13 @@ public class ClusteredEventBus extends EventBusImpl {
   }
 
   @Override
-  protected <T> void onLocalUnregistration(HandlerHolder<T> handlerHolder, Promise<Void> completionHandler) {
+  protected <T> void onLocalUnregistration(HandlerHolder<T> handlerHolder, Completable<Void> completionHandler) {
     RegistrationInfo registrationInfo = new RegistrationInfo(
       nodeId,
       handlerHolder.getSeq(),
       handlerHolder.isLocalOnly()
     );
-    Promise<Void> promise = Promise.promise();
-    clusterManager.removeRegistration(handlerHolder.getHandler().address(), registrationInfo, promise);
-    promise.future().onComplete(completionHandler);
+    clusterManager.removeRegistration(handlerHolder.getHandler().address(), registrationInfo, completionHandler);
   }
 
   @Override
@@ -189,25 +219,20 @@ public class ClusteredEventBus extends EventBusImpl {
     } else if (options.isLocalOnly()) {
       sendLocally(message, writePromise);
     } else {
-      Serializer serializer = Serializer.get(ctx);
       if (message.isSend()) {
-        Promise<String> promise = ctx.promise();
-        serializer.queue(message, nodeSelector::selectForSend, promise);
-        promise.future().onComplete(ar -> {
-          if (ar.succeeded()) {
-            sendToNode(ar.result(), message, writePromise);
+        nodeSelector.selectForSend(message.address(), (nodeId, failure) -> {
+          if (failure == null) {
+            sendToNode(nodeId, message, writePromise);
           } else {
-            sendOrPublishFailed(writePromise, ar.cause());
+            sendOrPublishFailed(writePromise, failure);
           }
         });
       } else {
-        Promise<Iterable<String>> promise = ctx.promise();
-        serializer.queue(message, nodeSelector::selectForPublish, promise);
-        promise.future().onComplete(ar -> {
-          if (ar.succeeded()) {
-            sendToNodes(ar.result(), message, writePromise);
+        nodeSelector.selectForPublish(message.address(), (nodeIds, failure) -> {
+          if (failure == null) {
+            sendToNodes(nodeIds, message, writePromise);
           } else {
-            sendOrPublishFailed(writePromise, ar.cause());
+            sendOrPublishFailed(writePromise, failure);
           }
         });
       }
@@ -263,7 +288,7 @@ public class ClusteredEventBus extends EventBusImpl {
     if ((host = clusterManager.clusterHost()) != null) {
       return host;
     }
-    return AddressHelper.defaultAddress();
+    return defaultAddress();
   }
 
   private int getClusterPublicPort(int actualPort) {
@@ -283,40 +308,6 @@ public class ClusteredEventBus extends EventBusImpl {
       return publicHost;
     }
     return host;
-  }
-
-  private Handler<NetSocket> getServerHandler() {
-    return socket -> {
-      RecordParser parser = RecordParser.newFixed(4);
-      Handler<Buffer> handler = new Handler<Buffer>() {
-        int size = -1;
-
-        public void handle(Buffer buff) {
-          if (size == -1) {
-            size = buff.getInt(0);
-            parser.fixedSizeMode(size);
-          } else {
-            ClusteredMessage received = new ClusteredMessage(ClusteredEventBus.this);
-            received.readFromWire(buff, codecManager);
-            if (metrics != null) {
-              metrics.messageRead(received.address(), buff.length());
-            }
-            parser.fixedSizeMode(4);
-            size = -1;
-            if (received.hasFailure()) {
-              received.internalError();
-            } else if (received.codec() == CodecManager.PING_MESSAGE_CODEC) {
-              // Just send back pong directly on connection
-              socket.write(PONG);
-            } else {
-              deliverMessageLocally(received);
-            }
-          }
-        }
-      };
-      parser.setOutput(handler);
-      socket.handler(parser);
-    };
   }
 
   private <T> void sendToNode(String nodeId, MessageImpl<?, T> message, Promise<Void> writePromise) {
@@ -352,37 +343,50 @@ public class ClusteredEventBus extends EventBusImpl {
   }
 
   private void sendRemote(String remoteNodeId, MessageImpl<?, ?> message, Promise<Void> writePromise) {
-    // We need to deal with the fact that connecting can take some time and is async, and we cannot
-    // block to wait for it. So we add any sends to a pending list if not connected yet.
-    // Once we connect we send them.
-    // This can also be invoked concurrently from different threads, so it gets a little
-    // tricky
-    ConnectionHolder holder = connections.get(remoteNodeId);
-    if (holder == null) {
-      // When process is creating a lot of connections this can take some time
-      // so increase the timeout
-      holder = new ConnectionHolder(this, remoteNodeId);
-      ConnectionHolder prevHolder = connections.putIfAbsent(remoteNodeId, holder);
-      if (prevHolder != null) {
-        // Another one sneaked in
-        holder = prevHolder;
+    OutboundConnection outboundConnection = getOutboundConnection(remoteNodeId);
+    outboundConnection.writeMessage(message, writePromise);
+  }
+
+  private OutboundConnection getOutboundConnection(String remoteNodeId) {
+    OutboundConnection conn = outboundConnections.get(remoteNodeId);
+    if (conn == null) {
+      conn = new OutboundConnection(this, remoteNodeId);
+      OutboundConnection prev = outboundConnections.putIfAbsent(remoteNodeId, conn);
+      if (prev != null) {
+        conn = prev;
       } else {
-        holder.connect();
+        connect(conn);
       }
     }
-    holder.writeMessage(message, writePromise);
+    return conn;
   }
 
-  ConcurrentMap<String, ConnectionHolder> connections() {
-    return connections;
-  }
-
-  VertxInternal vertx() {
-    return vertx;
-  }
-
-  EventBusOptions options() {
-    return options;
+  private void connect(OutboundConnection conn) {
+    Promise<NodeInfo> promise = Promise.promise();
+    clusterManager.getNodeInfo(conn.remoteNodeId(), promise);
+    promise.future()
+      .flatMap(info -> client.connect(info.port(), info.host()))
+      .onComplete(ar -> {
+        if (ar.succeeded()) {
+          NetSocket connection = ar.result();
+          connection.handler(conn);
+          connection.closeHandler(v -> {
+            if (outboundConnections.remove(conn.remoteNodeId(), conn)) {
+              if (log.isDebugEnabled()) {
+                log.debug("Cluster connection closed for server " + conn.remoteNodeId());
+              }
+            }
+            conn.handleClose(NetSocketInternal.CLOSED_EXCEPTION);
+          });
+          conn.connected(connection);
+        } else {
+          if (log.isWarnEnabled()) {
+            log.warn("Connecting to server " + conn.remoteNodeId() + " failed", ar.cause());
+          }
+          outboundConnections.remove(conn.remoteNodeId(), conn);
+          conn.handleClose(ar.cause());
+        }
+      });
   }
 }
 

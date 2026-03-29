@@ -10,10 +10,9 @@
  */
 package io.vertx.core.http.impl;
 
-import io.netty.handler.codec.http2.Http2Headers;
 import io.vertx.core.MultiMap;
 import io.vertx.core.http.HttpMethod;
-import io.vertx.core.http.impl.headers.Http2HeadersAdaptor;
+import io.vertx.core.http.HttpVersion;
 import io.vertx.core.net.HostAndPort;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.core.spi.observability.HttpRequest;
@@ -23,17 +22,16 @@ import io.vertx.core.spi.observability.HttpRequest;
  */
 public class HttpClientPush implements HttpRequest {
 
-  final String uri;
-  final HttpMethod method;
-  final HostAndPort authority;
-  final HttpClientStream stream;
-  final MultiMap headers;
+  private final String uri;
+  private final HttpMethod method;
+  private final HostAndPort authority;
+  private final HttpClientStream stream;
+  private final MultiMap headers;
 
-  public HttpClientPush(Http2Headers headers, HttpClientStream stream) {
+  public HttpClientPush(HttpRequestHead head, HttpClientStream stream) {
 
-    String rawMethod = headers.method().toString();
-    String authority = headers.authority() != null ? headers.authority().toString() : null;
-    MultiMap headersMap = new Http2HeadersAdaptor(headers);
+    String rawMethod = head.method().toString();
+    String authority = head.authority != null ? head.authority.toString() : null;
     int pos = authority == null ? -1 : authority.indexOf(':');
     if (pos == -1) {
       this.authority = HostAndPort.create(authority, 80);
@@ -41,14 +39,23 @@ public class HttpClientPush implements HttpRequest {
       this.authority = HostAndPort.create(authority.substring(0, pos), Integer.parseInt(authority.substring(pos + 1)));
     }
     this.method = HttpMethod.valueOf(rawMethod);
-    this.uri = headers.path().toString();
+    this.uri = head.uri;
     this.stream = stream;
-    this.headers = headersMap;
+    this.headers = head.headers;
+  }
+
+  public HttpClientStream stream() {
+    return stream;
   }
 
   @Override
-  public int id() {
+  public long id() {
     return stream.id();
+  }
+
+  @Override
+  public HttpVersion version() {
+    return HttpVersion.HTTP_2;
   }
 
   @Override
@@ -75,4 +82,5 @@ public class HttpClientPush implements HttpRequest {
   public HttpMethod method() {
     return method;
   }
+
 }

@@ -11,15 +11,16 @@
 
 package io.vertx.tests.eventbus;
 
-import io.vertx.core.Promise;
+import io.vertx.core.Completable;
 import io.vertx.core.Vertx;
 import io.vertx.core.VertxOptions;
 import io.vertx.core.eventbus.MessageProducer;
-import io.vertx.core.impl.VertxBuilder;
+import io.vertx.core.impl.VertxBootstrapImpl;
 import io.vertx.core.internal.VertxBootstrap;
-import io.vertx.core.spi.cluster.NodeSelector;
-import io.vertx.core.spi.cluster.impl.DefaultNodeSelector;
+import io.vertx.core.eventbus.impl.clustered.DefaultNodeSelector;
+import io.vertx.core.eventbus.impl.clustered.NodeSelector;
 import io.vertx.test.core.VertxTestBase;
+import io.vertx.test.fakecluster.FakeClusterManager;
 import org.junit.Test;
 
 import java.util.Collections;
@@ -40,16 +41,19 @@ public final class WriteHandlerLookupFailureTest extends VertxTestBase {
       .setPort(0);
     NodeSelector nodeSelector = new DefaultNodeSelector() {
       @Override
-      public void selectForSend(String address, Promise<String> promise) {
+      public void selectForSend(String address, Completable<String> promise) {
         promise.fail(cause);
       }
 
       @Override
-      public void selectForPublish(String address, Promise<Iterable<String>> promise) {
+      public void selectForPublish(String address, Completable<Iterable<String>> promise) {
         promise.fail("Not implemented");
       }
     };
-    ((VertxBuilder)VertxBootstrap.create().options(options).init()).clusterNodeSelector(nodeSelector).clusteredVertx().onComplete(onSuccess(node -> {
+    ((VertxBootstrapImpl)VertxBootstrap.create().options(options).init())
+      .clusterManager(new FakeClusterManager())
+      .clusterNodeSelector(nodeSelector)
+      .clusteredVertx().onComplete(onSuccess(node -> {
       vertx = node;
       MessageProducer<String> sender = vertx.eventBus().sender("foo");
       sender.write("the_string").onComplete(onFailure(err -> {

@@ -14,16 +14,19 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.vertx.core.Handler;
+import io.vertx.core.ThreadingModel;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.Http1ServerConfig;
 import io.vertx.core.http.HttpServerOptions;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
-import io.vertx.core.http.impl.Http1xServerConnection;
-import io.vertx.core.http.impl.VertxHttpRequestDecoder;
-import io.vertx.core.http.impl.VertxHttpResponseEncoder;
+import io.vertx.core.http.impl.http1.Http1ServerConnection;
+import io.vertx.core.http.impl.http1.VertxHttpRequestDecoder;
+import io.vertx.core.http.impl.http1.VertxHttpResponseEncoder;
 import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.internal.VertxInternal;
 import io.vertx.core.net.impl.VertxHandler;
+import io.vertx.core.tracing.TracingPolicy;
 import io.vertx.test.core.VertxTestBase;
 import org.junit.Test;
 
@@ -42,23 +45,37 @@ public class Http1xServerConnectionTest extends VertxTestBase {
 
     VertxInternal vertx = (VertxInternal) this.vertx;
 
-    HttpServerOptions options = new HttpServerOptions();
     EmbeddedChannel vertxChannel = new EmbeddedChannel(
-      new VertxHttpRequestDecoder(options),
+      new VertxHttpRequestDecoder(new Http1ServerConfig()),
       new VertxHttpResponseEncoder());
     vertxChannel.config().setAllocator(new io.vertx.benchmarks.HttpServerHandlerBenchmark.Alloc());
 
-    ContextInternal context = vertx.createEventLoopContext(vertxChannel.eventLoop(), null, Thread.currentThread().getContextClassLoader());
+    ContextInternal context = vertx
+      .contextBuilder()
+      .withEventLoop(vertxChannel.eventLoop())
+      .withClassLoader(Thread.currentThread().getContextClassLoader())
+      .build();
 
 
-    VertxHandler<Http1xServerConnection> handler = VertxHandler.create(chctx -> {
-      Http1xServerConnection conn = new Http1xServerConnection(
+    VertxHandler<Http1ServerConnection> handler = VertxHandler.create(chctx -> {
+      Http1ServerConnection conn = new Http1ServerConnection(
+        ThreadingModel.EVENT_LOOP,
         () -> context,
+        true,
+        false,
         null,
-        new HttpServerOptions(),
+        null,
+        HttpServerOptions.DEFAULT_MAX_FORM_ATTRIBUTE_SIZE,
+        HttpServerOptions.DEFAULT_MAX_FORM_FIELDS,
+        HttpServerOptions.DEFAULT_MAX_FORM_BUFFERED_SIZE,
+        new Http1ServerConfig(),
+        false,
+        null,
         chctx,
         context,
         "localhost",
+        TracingPolicy.PROPAGATE,
+        null,
         null);
       conn.handler(app);
       return conn;

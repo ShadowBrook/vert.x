@@ -10,7 +10,6 @@
  */
 package io.vertx.core.http.impl;
 
-import io.netty.buffer.ByteBuf;
 import io.vertx.codegen.annotations.Fluent;
 import io.vertx.codegen.annotations.Nullable;
 import io.vertx.core.Future;
@@ -21,8 +20,7 @@ import io.vertx.core.http.HttpFrame;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.StreamPriority;
 import io.vertx.core.internal.ContextInternal;
-import io.vertx.core.net.endpoint.EndpointInteraction;
-import io.vertx.core.streams.WriteStream;
+import io.vertx.core.net.endpoint.ServerInteraction;
 
 /**
  * Decorates an {@link HttpClientStream} that gathers usage statistics.
@@ -32,15 +30,15 @@ import io.vertx.core.streams.WriteStream;
 class StatisticsGatheringHttpClientStream implements HttpClientStream {
 
   private final HttpClientStream delegate;
-  private final EndpointInteraction endpointRequest;
+  private final ServerInteraction endpointRequest;
 
-  StatisticsGatheringHttpClientStream(HttpClientStream delegate, EndpointInteraction endpointRequest) {
+  StatisticsGatheringHttpClientStream(HttpClientStream delegate, ServerInteraction endpointRequest) {
     this.delegate = delegate;
     this.endpointRequest = endpointRequest;
   }
 
   @Override
-  public int id() {
+  public long id() {
     return delegate.id();
   }
 
@@ -60,17 +58,17 @@ class StatisticsGatheringHttpClientStream implements HttpClientStream {
   }
 
   @Override
-  public HttpClientConnectionInternal connection() {
+  public HttpClientConnection connection() {
     return delegate.connection();
   }
 
   @Override
-  public ContextInternal getContext() {
-    return delegate.getContext();
+  public ContextInternal context() {
+    return delegate.context();
   }
 
   @Override
-  public Future<Void> writeHead(HttpRequestHead request, boolean chunked, ByteBuf buf, boolean end, StreamPriority priority, boolean connect) {
+  public Future<Void> writeHead(HttpRequestHead request, boolean chunked, Buffer buf, boolean end, StreamPriority priority, boolean connect) {
     endpointRequest.reportRequestBegin();
     if (end) {
       endpointRequest.reportRequestEnd();
@@ -79,40 +77,44 @@ class StatisticsGatheringHttpClientStream implements HttpClientStream {
   }
 
   @Override
-  public Future<Void> writeBuffer(ByteBuf buf, boolean end) {
+  public Future<Void> writeChunk(Buffer buf, boolean end) {
     if (end) {
       endpointRequest.reportRequestEnd();
     }
-    return delegate.writeBuffer(buf, end);
+    return delegate.writeChunk(buf, end);
   }
 
   @Override
-  public Future<Void> writeFrame(int type, int flags, ByteBuf payload) {
+  public Future<Void> writeFrame(int type, int flags, Buffer payload) {
     return delegate.writeFrame(type, flags, payload);
   }
 
   @Override
-  public void continueHandler(Handler<Void> handler) {
+  public HttpClientStream continueHandler(Handler<Void> handler) {
     delegate.continueHandler(handler);
+    return this;
   }
 
   @Override
-  public void earlyHintsHandler(Handler<MultiMap> handler) {
+  public HttpClientStream earlyHintsHandler(Handler<MultiMap> handler) {
     delegate.earlyHintsHandler(handler);
+    return this;
   }
 
   @Override
-  public void pushHandler(Handler<HttpClientPush> handler) {
+  public HttpClientStream pushHandler(Handler<HttpClientPush> handler) {
     delegate.pushHandler(handler);
+    return this;
   }
 
   @Override
-  public void unknownFrameHandler(Handler<HttpFrame> handler) {
-    delegate.unknownFrameHandler(handler);
+  public HttpClientStream customFrameHandler(Handler<HttpFrame> handler) {
+    delegate.customFrameHandler(handler);
+    return this;
   }
 
   @Override
-  public void headHandler(Handler<HttpResponseHead> handler) {
+  public HttpClientStream headHandler(Handler<HttpResponseHead> handler) {
     if (handler != null) {
       delegate.headHandler(multimap -> {
         endpointRequest.reportResponseBegin();
@@ -121,58 +123,60 @@ class StatisticsGatheringHttpClientStream implements HttpClientStream {
     } else {
       delegate.headHandler(null);
     }
+    return this;
   }
 
   @Override
-  public void chunkHandler(Handler<Buffer> handler) {
-    delegate.chunkHandler(handler);
+  public HttpClientStream dataHandler(Handler<Buffer> handler) {
+    delegate.dataHandler(handler);
+    return this;
   }
 
   @Override
-  public void endHandler(Handler<MultiMap> handler) {
+  public HttpClientStream trailersHandler(Handler<MultiMap> handler) {
     if (handler != null) {
-      delegate.endHandler(multimap -> {
+      delegate.trailersHandler(multimap -> {
         endpointRequest.reportResponseEnd();
         handler.handle(multimap);
       });
     } else {
-      delegate.endHandler(null);
+      delegate.trailersHandler(null);
     }
+    return this;
   }
 
   @Override
-  public void priorityHandler(Handler<StreamPriority> handler) {
-    delegate.priorityHandler(handler);
+  public HttpClientStream priorityChangeHandler(Handler<StreamPriority> handler) {
+    delegate.priorityChangeHandler(handler);
+    return this;
   }
 
   @Override
-  public void closeHandler(Handler<Void> handler) {
+  public HttpClientStream closeHandler(Handler<Void> handler) {
     delegate.closeHandler(handler);
+    return this;
   }
 
   @Override
-  public void doSetWriteQueueMaxSize(int size) {
-    delegate.doSetWriteQueueMaxSize(size);
+  public HttpClientStream pause() {
+    delegate.pause();
+    return this;
   }
 
   @Override
-  public boolean isNotWritable() {
-    return delegate.isNotWritable();
+  public HttpClientStream fetch(long amount) {
+    delegate.fetch(amount);
+    return this;
   }
 
   @Override
-  public void doPause() {
-    delegate.doPause();
+  public Future<Boolean> cancel() {
+    return delegate.cancel();
   }
 
   @Override
-  public void doFetch(long amount) {
-    delegate.doFetch(amount);
-  }
-
-  @Override
-  public void reset(Throwable cause) {
-    delegate.reset(cause);
+  public Future<Void> writeReset(long code) {
+    return delegate.writeReset(code);
   }
 
   @Override
@@ -181,12 +185,19 @@ class StatisticsGatheringHttpClientStream implements HttpClientStream {
   }
 
   @Override
-  public void updatePriority(StreamPriority streamPriority) {
+  public HttpClientStream updatePriority(StreamPriority streamPriority) {
     delegate.updatePriority(streamPriority);
+    return this;
   }
 
   @Override
-  public WriteStream<Buffer> exceptionHandler(@Nullable Handler<Throwable> handler) {
+  public HttpClientStream resetHandler(Handler<Long> handler) {
+    delegate.resetHandler(handler);
+    return this;
+  }
+
+  @Override
+  public HttpClientStream exceptionHandler(@Nullable Handler<Throwable> handler) {
     if (handler != null) {
       delegate.exceptionHandler(err -> {
         endpointRequest.reportFailure(err);
@@ -200,18 +211,18 @@ class StatisticsGatheringHttpClientStream implements HttpClientStream {
 
   @Override
   @Fluent
-  public WriteStream<Buffer> setWriteQueueMaxSize(int maxSize) {
+  public HttpClientStream setWriteQueueMaxSize(int maxSize) {
     return delegate.setWriteQueueMaxSize(maxSize);
   }
 
   @Override
-  public boolean writeQueueFull() {
-    return delegate.writeQueueFull();
+  public boolean isWritable() {
+    return delegate.isWritable();
   }
 
   @Override
   @Fluent
-  public WriteStream<Buffer> drainHandler(@Nullable Handler<Void> handler) {
+  public HttpClientStream drainHandler(@Nullable Handler<Void> handler) {
     return delegate.drainHandler(handler);
   }
 }

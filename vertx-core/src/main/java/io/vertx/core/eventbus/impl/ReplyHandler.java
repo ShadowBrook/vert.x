@@ -11,6 +11,7 @@
 
 package io.vertx.core.eventbus.impl;
 
+import io.vertx.core.Completable;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.Promise;
@@ -22,6 +23,8 @@ import io.vertx.core.spi.tracing.TagExtractor;
 import io.vertx.core.spi.tracing.VertxTracer;
 
 class ReplyHandler<T> extends HandlerRegistration<T> implements Handler<Long> {
+
+  private static final Completable<Void> NULL_COMPLETABLE = (res, err) -> {};
 
   private final Promise<Message<T>> result;
   private final long timeoutID;
@@ -71,17 +74,16 @@ class ReplyHandler<T> extends HandlerRegistration<T> implements Handler<Long> {
   }
 
   @Override
-  protected boolean doReceive(Message<T> reply) {
-    dispatch(null, reply, context);
-    return true;
+  protected void doReceive(Message<T> reply) {
+    dispatchMessage(null, (MessageImpl<?, T>) reply, context);
   }
 
   void register() {
-    register(false, false, null);
+    register(false, false, NULL_COMPLETABLE);
   }
 
   @Override
-  protected void dispatch(Message<T> reply, ContextInternal context, Handler<Message<T>> handler /* null */) {
+  protected void dispatchMessage(Message<T> reply, ContextInternal context, Handler<Message<T>> handler /* null */) {
     if (context.owner().cancelTimer(timeoutID)) {
       unregister();
       if (reply.body() instanceof ReplyException) {

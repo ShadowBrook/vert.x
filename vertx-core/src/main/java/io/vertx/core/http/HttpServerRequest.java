@@ -28,7 +28,6 @@ import io.vertx.core.streams.ReadStream;
 
 import javax.net.ssl.SSLSession;
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * Represents a server-side HTTP request.
@@ -44,7 +43,7 @@ import java.util.stream.Collectors;
  * @author <a href="http://tfox.org">Tim Fox</a>
  */
 @VertxGen
-public interface HttpServerRequest extends ReadStream<Buffer> {
+public interface HttpServerRequest extends ReadStream<Buffer>, HttpRequestHead {
 
   /**
    * The default invalid request handler, it uses the {@link #decoderResult()} cause and the request information
@@ -118,30 +117,25 @@ public interface HttpServerRequest extends ReadStream<Buffer> {
   String scheme();
 
   /**
-   * @return the URI of the request. This is usually a relative URI
-   */
-  String uri();
-
-  /**
-   * @return The path part of the uri. For example /somepath/somemorepath/someresource.foo
-   */
-  @Nullable
-  String path();
-
-  /**
-   * @return the query part of the uri. For example someparam=32&amp;someotherparam=x
-   */
-  @Nullable
-  String query();
-
-  /**
-   * @return the request authority. For HTTP/2 the {@literal :authority} pseudo header is returned, for HTTP/1.x the
-   *         {@literal Host} header is returned or {@code null} when no such header is present. When the authority
-   *         string does not carry a port, the {@link HostAndPort#port()} returns {@code -1} to indicate the
-   *         scheme port is prevalent.
+   * @return the request authority.
+   *         <ul>
+   *           <li>HTTP/2: the {@literal :authority} pseudo header is returned if present, otherwise the {@literal Host}
+   *           header value is returned.
+   *           <li>HTTP/1.x: the {@literal Host} header is returned
+   *           <li>or {@code null} when no such header is present
+   *         </ul>
+   *         When the authority string does not carry a port, the {@link HostAndPort#port()} returns {@code -1} to
+   *         indicate the scheme port is prevalent.
    */
   @Nullable
   HostAndPort authority();
+
+  /**
+   * @param real whether to return the value of the real HTTP/2 {@literal :authority} header, or the computed one.
+   * @return the authority, either computed or real. May be null when {@literal real} is {@code true}.
+   */
+  @Nullable
+  HostAndPort authority(boolean real);
 
   /**
    * @return the total number of bytes read for the body of the request.
@@ -154,34 +148,6 @@ public interface HttpServerRequest extends ReadStream<Buffer> {
    */
   @CacheReturn
   HttpServerResponse response();
-
-  /**
-   * @return the headers in the request.
-   */
-  @CacheReturn
-  MultiMap headers();
-
-  /**
-   * Return the first header value with the specified name
-   *
-   * @param headerName  the header name
-   * @return the header value
-   */
-  @Nullable
-  default String getHeader(String headerName) {
-    return headers().get(headerName);
-  }
-
-  /**
-   * Return the first header value with the specified name
-   *
-   * @param headerName  the header name
-   * @return the header value
-   */
-  @GenIgnore(GenIgnore.PERMITTED_TYPE)
-  default String getHeader(CharSequence headerName) {
-    return headers().get(headerName);
-  }
 
   /**
    * Override the charset to use for decoding the query parameter map, when none is set, {@code UTF8} is used.
@@ -374,8 +340,8 @@ public interface HttpServerRequest extends ReadStream<Buffer> {
    *         the request has not been yet sent or it is not supported HTTP/1.x
    */
   @CacheReturn
-  default int streamId() {
-    return -1;
+  default long streamId() {
+    return -1L;
   }
 
   /**
@@ -474,22 +440,6 @@ public interface HttpServerRequest extends ReadStream<Buffer> {
    */
   default int cookieCount() {
     return cookies().size();
-  }
-
-  /**
-   * @deprecated the implementation made a wrong assumption that cookies could be identified only by their name. The RFC
-   * states that the tuple of {@code <name, domain, path>} is the unique identifier.
-   *
-   * When more than one cookie has the same name, the map will hold that lost one to be parsed and any previously parsed
-   * value will be silently overwritten.
-   *
-   * @return a map of all the cookies.
-   */
-  @Deprecated
-  default Map<String, Cookie> cookieMap() {
-    return cookies()
-      .stream()
-      .collect(Collectors.toMap(Cookie::getName, cookie -> cookie));
   }
 
   /**

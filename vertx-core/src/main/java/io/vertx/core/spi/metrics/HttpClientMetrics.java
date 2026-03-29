@@ -11,7 +11,6 @@
 
 package io.vertx.core.spi.metrics;
 
-import io.vertx.core.http.WebSocket;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.core.spi.observability.HttpRequest;
 import io.vertx.core.spi.observability.HttpResponse;
@@ -35,7 +34,7 @@ import io.vertx.core.spi.observability.HttpResponse;
  *
  * @author <a href="mailto:nscavell@redhat.com">Nick Scavelli</a>
  */
-public interface HttpClientMetrics<R, W, S, T> extends TCPMetrics<S> {
+public interface HttpClientMetrics<R, W> extends WebSocketMetrics<W> {
 
   /**
    * Provides metrics for a particular endpoint
@@ -44,41 +43,7 @@ public interface HttpClientMetrics<R, W, S, T> extends TCPMetrics<S> {
    * @param maxPoolSize the client max pool size
    * @return the endpoint metric
    */
-  default ClientMetrics<R, T, HttpRequest, HttpResponse> createEndpointMetrics(SocketAddress remoteAddress, int maxPoolSize) {
+  default ClientMetrics<R, HttpRequest, HttpResponse> createEndpointMetrics(SocketAddress remoteAddress, int maxPoolSize) {
     return null;
-  }
-
-  /**
-   * Called when a connection is made to a endpoint.
-   *  @param endpointMetric the endpoint metric
-   *
-   */
-  default void endpointConnected(ClientMetrics<R, T, ?, ?> endpointMetric) {
-  }
-
-  /**
-   * Called when a connection to an endpoint is closed.
-   *  @param endpointMetric the endpoint metric
-   *
-   */
-  default void endpointDisconnected(ClientMetrics<R, T, ?, ?> endpointMetric) {
-  }
-
-  /**
-   * Called when a web socket connects.
-   *
-   * @param webSocket the server web socket
-   * @return the web socket metric
-   */
-  default W connected(WebSocket webSocket) {
-    return null;
-  }
-
-  /**
-   * Called when the web socket has disconnected.
-   *
-   * @param webSocketMetric the web socket metric
-   */
-  default void disconnected(W webSocketMetric) {
   }
 }

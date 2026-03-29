@@ -1,0 +1,220 @@
+/*
+ * Copyright (c) 2011-2025 Contributors to the Eclipse Foundation
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0, or the Apache License, Version 2.0
+ * which is available at https://www.apache.org/licenses/LICENSE-2.0.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
+ */
+package io.vertx.tests.net.quic;
+
+import io.vertx.core.Context;
+import io.vertx.core.Future;
+import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
+import io.vertx.core.internal.ContextInternal;
+import io.vertx.core.internal.VertxInternal;
+import io.vertx.core.internal.quic.QuicConnectionInternal;
+import io.vertx.core.net.*;
+import io.vertx.test.core.VertxTestBase;
+import org.junit.Test;
+
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class QuicContextTest extends VertxTestBase {
+
+  private ContextInternal workerContext;
+  private QuicServer server;
+  private QuicClient client;
+
+  @Override
+  public void setUp() throws Exception {
+    super.setUp();
+    QuicServerConfig serverOptions = new QuicServerConfig();
+    QuicClientConfig clientOptions = new QuicClientConfig();
+    serverOptions.getTransportConfig().setDatagramConfig(new QuicDatagramConfig().setEnabled(true));
+    clientOptions.getTransportConfig().setDatagramConfig(new QuicDatagramConfig().setEnabled(true));
+    server = vertx.createQuicServer(serverOptions, QuicServerTest.SSL_OPTIONS);
+    client = vertx.createQuicClient(clientOptions, QuicClientTest.SSL_OPTIONS);
+    workerContext = ((VertxInternal) vertx).createWorkerContext();
+  }
+
+  @Override
+  protected void tearDown() throws Exception {
+    client.close().await();
+    server.close().await();
+    super.tearDown();
+  }
+
+  @Test
+  public void testServerConnectionScoped() {
+
+    server.connectHandler(conn -> {
+      assertSame(Vertx.currentContext(), workerContext);
+      conn.streamHandler(stream -> {
+        assertSame(Vertx.currentContext(), workerContext);
+        stream.handler(buff -> {
+          assertSame(Vertx.currentContext(), workerContext);
+          stream.write(buff);
+        });
+        stream.endHandler(v -> {
+          assertSame(Vertx.currentContext(), workerContext);
+          stream.end();
+          testComplete();
+        });
+      });
+    });
+
+    Future.future(p -> workerContext.runOnContext(v -> server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).onComplete(p))).await();
+    client.bind(SocketAddress.inetSocketAddress(0, "localhost")).await();
+    QuicConnection connection = client.connect(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicStream stream = connection
+      .openStream().await();
+    stream.end(Buffer.buffer("ping")).await();
+    await();
+  }
+
+  @Test
+  public void testServerStreamScoped() {
+
+    server.connectHandler(conn -> {
+      assertSame(Vertx.currentContext(), workerContext);
+      conn.streamHandler(stream -> {
+        assertSame(Vertx.currentContext(), workerContext);
+        stream.handler(buff -> {
+          assertSame(Vertx.currentContext(), workerContext);
+          stream.write(buff);
+        });
+        stream.endHandler(v -> {
+          assertSame(Vertx.currentContext(), workerContext);
+          stream.end();
+          testComplete();
+        });
+      });
+    });
+
+    Future.future(p -> workerContext.runOnContext(v -> server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).onComplete(p))).await();
+    client.bind(SocketAddress.inetSocketAddress(0, "localhost")).await();
+    QuicConnection connection = client.connect(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicStream stream = connection.openStream().await();
+    stream.end(Buffer.buffer("ping")).await();
+    await();
+  }
+
+  @Test
+  public void testClientConnectionScoped() {
+
+    server.connectHandler(conn -> {
+      conn.datagramHandler(conn::writeDatagram);
+    });
+
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    client.bind(SocketAddress.inetSocketAddress(0, "localhost")).await();
+
+    QuicConnection connection = Future.<QuicConnection>future(p -> workerContext.runOnContext(v -> client.connect(SocketAddress.inetSocketAddress(9999, "localhost")).onComplete(p))).await();
+
+    connection.datagramHandler(buff -> {
+      assertSame(workerContext, Vertx.currentContext());
+      testComplete();
+    });
+    connection.writeDatagram(Buffer.buffer("ping")).await();
+
+    await();
+  }
+
+  @Test
+  public void testClientStreamScoped() {
+
+    server.connectHandler(conn -> {
+      conn.streamHandler(stream -> {
+        stream.handler(buff -> stream.write(buff));
+        stream.endHandler(v -> stream.end());
+      });
+    });
+
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    client.bind(SocketAddress.inetSocketAddress(0, "localhost")).await();
+
+    QuicConnection connection = client.connect(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+
+    QuicStream stream = Future.<QuicStream>future(p -> workerContext.runOnContext(v -> connection.openStream().onComplete(p))).await();
+
+    AtomicInteger cnt = new AtomicInteger();
+    stream.handler(buff -> {
+      assertSame(workerContext, Vertx.currentContext());
+      cnt.incrementAndGet();
+    });
+    stream.endHandler(v -> {
+      assertSame(workerContext, Vertx.currentContext());
+      testComplete();
+    });
+    stream.write(Buffer.buffer("ping")).await();
+    assertWaitUntil(() -> cnt.get() == 1);
+    stream.end().await();
+
+    await();
+  }
+
+  @Test
+  public void testStreamContextProvider() {
+
+    server.connectHandler(conn -> {
+      assertNotSame(Vertx.currentContext(), workerContext);
+      Context connectionCtx = vertx.getOrCreateContext();
+      ((QuicConnectionInternal)conn).streamContextProvider(ctx -> workerContext);
+      conn.streamHandler(stream -> {
+        assertSame(Vertx.currentContext(), connectionCtx);
+        stream.handler(buff -> {
+          assertSame(Vertx.currentContext(), workerContext);
+          stream.write(buff);
+        });
+        stream.endHandler(v -> {
+          assertSame(Vertx.currentContext(), workerContext);
+          stream.end();
+          testComplete();
+        });
+      });
+    });
+
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    client.bind(SocketAddress.inetSocketAddress(0, "localhost")).await();
+    QuicConnection connection = client.connect(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    QuicStream stream = connection.openStream().await();
+    stream.end(Buffer.buffer("ping")).await();
+    await();
+  }
+
+  @Test
+  public void testStreamContextProvided() {
+
+    server.connectHandler(conn -> {
+      conn.streamHandler(stream -> {
+        stream.handler(buff -> stream.write(buff));
+        stream.endHandler(v -> stream.end());
+      });
+    });
+
+    server.bind(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+    client.bind(SocketAddress.inetSocketAddress(0, "localhost")).await();
+
+    QuicConnection connection = client.connect(SocketAddress.inetSocketAddress(9999, "localhost")).await();
+
+    QuicStream stream = ((QuicConnectionInternal)connection).openStream(workerContext).await();
+
+    AtomicInteger cnt = new AtomicInteger();
+    stream.handler(buff -> {
+      assertSame(workerContext, Vertx.currentContext());
+      cnt.incrementAndGet();
+    });
+    stream.endHandler(v -> {
+      assertSame(workerContext, Vertx.currentContext());
+      testComplete();
+    });
+    stream.write(Buffer.buffer("ping")).await();
+    assertWaitUntil(() -> cnt.get() == 1);
+    stream.end().await();
+
+    await();  }
+}

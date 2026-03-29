@@ -10,7 +10,6 @@
  */
 package io.vertx.core.internal.http;
 
-import io.vertx.core.Context;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.spi.observability.HttpRequest;
@@ -28,8 +27,14 @@ public abstract class HttpServerRequestInternal implements HttpServerRequest {
   public abstract ContextInternal context();
 
   /**
-   * @return the metric object returned by the {@link io.vertx.core.spi.metrics.HttpServerMetrics#requestBegin(Object, HttpRequest)} call
+   * @return the metric object returned by the {@link io.vertx.core.spi.metrics.HttpServerMetrics#requestBegin(io.vertx.core.net.SocketAddress, HttpRequest)} call
    */
   public abstract Object metric();
 
+  /**
+   * This method act as {@link #authority()}{@code != null}, trying to not allocated a new object if the authority is not yet parsed.
+   */
+  public boolean isValidAuthority() {
+    return authority() != null;
+  }
 }

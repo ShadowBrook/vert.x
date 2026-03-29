@@ -11,26 +11,31 @@
 package io.vertx.core;
 
 /**
- * The threading model defines how user tasks should be executed.
+ * The threading model defines the scheduler to execute context tasks.
  *
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
 public enum ThreadingModel {
 
   /**
-   * Event-loop threading model.
+   * Tasks are scheduled on the event-loop thread of the vertx instance.
    */
   EVENT_LOOP,
 
   /**
-   * Worker threading model
+   * Tasks are scheduled on a worker pool of platform threads managed by the vertx instance.
    */
   WORKER,
 
   /**
-   * Virtual thread threading model
+   * Tasks are scheduled on a virtual thread, no assumption on whether virtual threads are pooled.
    */
-  VIRTUAL_THREAD
+  VIRTUAL_THREAD,
 
+  /**
+   * Tasks are scheduled on threads not managed by the current vertx instance, the nature of the thread is unknown
+   * to the vertx instance. An event-loop thread of another vertx instance falls in this category.
+   */
+  EXTERNAL
 }
 

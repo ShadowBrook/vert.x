@@ -16,12 +16,9 @@ import io.vertx.core.impl.VertxThread;
 import io.vertx.core.internal.VertxBootstrap;
 import io.vertx.core.internal.VertxInternal;
 import io.vertx.core.metrics.MetricsOptions;
-import io.vertx.core.impl.transports.JDKTransport;
+import io.vertx.core.impl.transports.NioTransport;
+import io.vertx.core.spi.*;
 import io.vertx.core.spi.transport.Transport;
-import io.vertx.core.spi.ExecutorServiceFactory;
-import io.vertx.core.spi.VertxMetricsFactory;
-import io.vertx.core.spi.VertxThreadFactory;
-import io.vertx.core.spi.VertxTracerFactory;
 import io.vertx.core.spi.cluster.ClusterManager;
 import io.vertx.core.tracing.TracingOptions;
 import io.vertx.test.fakecluster.FakeClusterManager;
@@ -38,11 +35,13 @@ import java.io.IOException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Files;
+import java.util.Collections;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.*;
 
@@ -55,7 +54,11 @@ public class VertxBootstrapTest {
   public void testCreate() {
     VertxBootstrap factory = VertxBootstrap.create().init();
     Vertx vertx = factory.init().vertx();
-    assertNotNull(vertx);
+    try {
+      assertNotNull(vertx);
+    } finally {
+      vertx.close().await();
+    }
   }
 
   @Test
@@ -63,6 +66,7 @@ public class VertxBootstrapTest {
     VertxBootstrap factory = VertxBootstrap.create().init();
     CompletableFuture<Vertx> fut = new CompletableFuture<>();
     factory.init();
+    factory.clusterManager(new FakeClusterManager());
     factory.clusteredVertx().onComplete(ar -> {
       if (ar.succeeded()) {
         fut.complete(ar.result());
@@ -71,8 +75,12 @@ public class VertxBootstrapTest {
       }
     });
     Vertx vertx = fut.get(10, TimeUnit.SECONDS);
-    assertNotNull(vertx);
-    assertNotNull(((VertxInternal)vertx).getClusterManager());
+    try {
+      assertNotNull(vertx);
+      assertNotNull(((VertxInternal)vertx).clusterManager());
+    } finally {
+      vertx.close().await();
+    }
   }
 
   @Test
@@ -84,7 +92,11 @@ public class VertxBootstrapTest {
       factory.metricsFactory(options -> metrics);
       factory.init();
       Vertx vertx = factory.vertx();
-      assertSame(metrics, ((VertxInternal)vertx).metricsSPI());
+      try {
+        assertSame(metrics, ((VertxInternal)vertx).metrics());
+      } finally {
+        vertx.close().await();
+      }
     });
   }
 
@@ -112,7 +124,11 @@ public class VertxBootstrapTest {
       factory.tracerFactory(options -> tracer);
       factory.init();
       Vertx vertx = factory.vertx();
-      assertSame(tracer, ((VertxInternal)vertx).getOrCreateContext().tracer());
+      try {
+        assertSame(tracer, ((VertxInternal)vertx).getOrCreateContext().tracer());
+      } finally {
+        vertx.close().await();
+      }
     });
   }
 
@@ -148,19 +164,27 @@ public class VertxBootstrapTest {
       });
     });
     Vertx vertx = res.get(10, TimeUnit.SECONDS);
-    assertSame(clusterManager, ((VertxInternal)vertx).getClusterManager());
+    try {
+      assertSame(clusterManager, ((VertxInternal)vertx).clusterManager());
+    } finally {
+      vertx.close().await();
+    }
   }
 
   @Test
   public void testFactoryTransportOverridesDefault() {
     VertxBootstrap factory = VertxBootstrap.create();
-    // JDK transport
-    Transport override = new JDKTransport() {
+    // NIO transport
+    Transport override = new NioTransport() {
     };
     factory.transport(override);
     factory.init();
     Vertx vertx = factory.vertx();
-    assertSame(override, ((VertxInternal)vertx).transport());
+    try {
+      assertSame(override, ((VertxInternal)vertx).transport());
+    } finally {
+      vertx.close().await();
+    }
   }
 
   @Test
@@ -177,7 +201,20 @@ public class VertxBootstrapTest {
       .executorServiceFactory(new CustomExecutorServiceFactory())
       .init()
       .vertx()
-      .close().toCompletionStage().toCompletableFuture().join();
+      .close().await();
+  }
+
+  @Test
+  public void testExplicitServiceProviders() {
+    AtomicInteger initialized = new AtomicInteger();
+    VertxServiceProvider provider = builder -> initialized.incrementAndGet();
+    VertxBootstrap factory = VertxBootstrap.create();
+    Vertx vertx = factory
+      .serviceProviders(Collections.singletonList(provider))
+      .init()
+      .vertx();
+    vertx.close();
+    assertEquals(1, initialized.get());
   }
 
   private class CustomExecutorServiceFactory implements ExecutorServiceFactory {

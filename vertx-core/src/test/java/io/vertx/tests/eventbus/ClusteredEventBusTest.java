@@ -13,13 +13,20 @@ package io.vertx.tests.eventbus;
 
 import io.vertx.core.*;
 import io.vertx.core.eventbus.*;
+import io.vertx.core.eventbus.impl.clustered.ClusteredEventBus;
 import io.vertx.core.internal.VertxInternal;
+import io.vertx.core.net.SocketAddress;
+import io.vertx.core.net.TcpClientConfig;
+import io.vertx.core.net.TcpServerConfig;
+import io.vertx.core.spi.cluster.ClusterManager;
+import io.vertx.core.spi.cluster.RegistrationUpdateEvent;
+import io.vertx.core.spi.metrics.TransportMetrics;
+import io.vertx.core.spi.metrics.VertxMetrics;
+import io.vertx.test.core.TestUtils;
+import io.vertx.test.fakecluster.FakeClusterManager;
+import io.vertx.test.tls.Cert;
 import io.vertx.tests.shareddata.AsyncMapTest.SomeClusterSerializableObject;
 import io.vertx.tests.shareddata.AsyncMapTest.SomeSerializableObject;
-import io.vertx.core.spi.cluster.NodeSelector;
-import io.vertx.core.spi.cluster.RegistrationUpdateEvent;
-import io.vertx.test.core.TestUtils;
-import io.vertx.test.tls.Cert;
 import org.junit.Test;
 
 import java.io.InvalidClassException;
@@ -32,7 +39,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -44,7 +50,7 @@ import java.util.stream.Stream;
 public class ClusteredEventBusTest extends ClusteredEventBusTestBase {
 
   @Test
-  public void testLocalHandlerNotVisibleRemotely() throws Exception {
+  public void testLocalHandlerNotVisibleRemotely() {
     startNodes(2);
     vertices[1].eventBus().localConsumer(ADDRESS1).handler(msg -> {
       fail("Should not receive message");
@@ -192,7 +198,7 @@ public class ClusteredEventBusTest extends ClusteredEventBusTestBase {
     MessageConsumer<String> consumer = vertices[0].eventBus().<String>consumer("foobar").handler(msg -> {
       if (!sending.get()) {
         sending.set(true);
-        vertx.setTimer(4000, id -> {
+        vertices[1].setTimer(4000, id -> {
           vertices[1].eventBus().send("foobar", "whatever2");
         });
       } else {
@@ -252,7 +258,7 @@ public class ClusteredEventBusTest extends ClusteredEventBusTestBase {
     testSubsRemoved(latch -> {
       VertxInternal vi = (VertxInternal) vertices[1];
       Promise<Void> promise = vi.getOrCreateContext().promise();
-      vi.getClusterManager().leave(promise);
+      vi.clusterManager().leave(promise);
       promise.future().onComplete(onSuccess(v -> {
         latch.countDown();
       }));
@@ -395,21 +401,15 @@ public class ClusteredEventBusTest extends ClusteredEventBusTestBase {
     CountDownLatch updateLatch = new CountDownLatch(3);
     startNodes(2, () -> new WrappedClusterManager(getClusterManager()) {
       @Override
-      public void init(Vertx vertx, NodeSelector nodeSelector) {
-        super.init(vertx, new WrappedNodeSelector(nodeSelector) {
-          @Override
-          public void registrationsUpdated(RegistrationUpdateEvent event) {
-            super.registrationsUpdated(event);
-            if (event.address().equals(ADDRESS1) && event.registrations().size() == 1) {
-              updateLatch.countDown();
-            }
-          }
-
-          @Override
-          public boolean wantsUpdatesFor(String address) {
-            return true;
-          }
-        });
+      public void registrationsUpdated(RegistrationUpdateEvent event) {
+        super.registrationsUpdated(event);
+        if (event.address().equals(ADDRESS1) && event.registrations().size() == 1) {
+          updateLatch.countDown();
+        }
+      }
+      @Override
+      public boolean wantsUpdatesFor(String address) {
+        return true;
       }
     });
     waitFor(2);
@@ -485,17 +485,10 @@ public class ClusteredEventBusTest extends ClusteredEventBusTestBase {
 
   @Test
   public void testSelectorWantsUpdates() {
-    AtomicReference<NodeSelector> nodeSelectorRef = new AtomicReference<>();
-    startNodes(1, () -> new WrappedClusterManager(getClusterManager()) {
-      @Override
-      public void init(Vertx vertx, NodeSelector nodeSelector) {
-        nodeSelectorRef.set(nodeSelector);
-        super.init(vertx, nodeSelector);
-      }
-    });
-    assertNotNull(nodeSelectorRef.get());
+    WrappedClusterManager wrapped = new WrappedClusterManager(getClusterManager());
+    startNodes(1, () -> wrapped);
     vertices[0].eventBus().consumer(ADDRESS1, msg -> {
-      assertTrue(nodeSelectorRef.get().wantsUpdatesFor(ADDRESS1));
+      assertTrue(wrapped.wantsUpdatesFor(ADDRESS1));
       testComplete();
     }).completion().onComplete(onSuccess(v -> vertices[0].eventBus().send(ADDRESS1, "foo")));
     await();
@@ -503,16 +496,9 @@ public class ClusteredEventBusTest extends ClusteredEventBusTestBase {
 
   @Test
   public void testSelectorDoesNotWantUpdates() {
-    AtomicReference<NodeSelector> nodeSelectorRef = new AtomicReference<>();
-    startNodes(1, () -> new WrappedClusterManager(getClusterManager()) {
-      @Override
-      public void init(Vertx vertx, NodeSelector nodeSelector) {
-        nodeSelectorRef.set(nodeSelector);
-        super.init(vertx, nodeSelector);
-      }
-    });
-    assertNotNull(nodeSelectorRef.get());
-    assertFalse(nodeSelectorRef.get().wantsUpdatesFor(ADDRESS1));
+    WrappedClusterManager wrapped = new WrappedClusterManager(getClusterManager());
+    startNodes(1, () -> wrapped);
+    assertFalse(wrapped.wantsUpdatesFor(ADDRESS1));
   }
 
   @Test
@@ -689,5 +675,109 @@ public class ClusteredEventBusTest extends ClusteredEventBusTestBase {
 
     await();
 
+  }
+
+  @Test
+  public void testPreserveMessageOrderingOnContext() {
+    int num = 256;
+    startNodes(2);
+    ClusterManager clusterManager = ((VertxInternal) vertices[0]).clusterManager();
+    if (clusterManager instanceof FakeClusterManager) {
+      // Other CM will exhibit latency for this one we must fake it
+      FakeClusterManager fakeClusterManager = (FakeClusterManager) clusterManager;
+      fakeClusterManager.getRegistrationsLatency(500);
+    }
+    AtomicInteger received = new AtomicInteger();
+    vertices[1].eventBus().consumer(ADDRESS1, msg -> {
+      int val = received.getAndIncrement();
+      assertEquals(val, msg.body());
+      if (val == num - 1) {
+        testComplete();
+      }
+    }).completion().await();
+    Context ctx = vertices[0].getOrCreateContext();
+    ctx.runOnContext(v -> {
+      for (int i = 0;i < num;i++) {
+        vertices[0].eventBus().send(ADDRESS1, i);
+      }
+    });
+    await();
+  }
+
+  @Test
+  public void testSocketCleanup() {
+    startNodes(1);
+    vertices[0].eventBus().consumer(ADDRESS1, msg -> {
+      msg.reply("pong");
+    });
+    AtomicInteger numberOfOutboundConnections = new AtomicInteger();
+    AtomicInteger numberOfInboundConnections = new AtomicInteger();
+    Vertx vertx = vertx(() -> Vertx.builder()
+      .withClusterManager(getClusterManager())
+      .withMetrics(options -> new VertxMetrics() {
+        @Override
+        public TransportMetrics<?> createTcpClientMetrics(TcpClientConfig config, String protocol) {
+          return new TransportMetrics<>() {
+            @Override
+            public Object connected(SocketAddress remoteAddress, String remoteName) {
+              numberOfOutboundConnections.incrementAndGet();
+              return null;
+            }
+            @Override
+            public void disconnected(Object connectionMetric, SocketAddress remoteAddress) {
+              numberOfOutboundConnections.decrementAndGet();
+            }
+          };
+        }
+        @Override
+        public TransportMetrics<?> createTcpServerMetrics(TcpServerConfig config, String protocol, SocketAddress localAddress) {
+          return new TransportMetrics<>() {
+            @Override
+            public Object connected(SocketAddress remoteAddress, String remoteName) {
+              numberOfInboundConnections.incrementAndGet();
+              return null;
+            }
+            @Override
+            public void disconnected(Object connectionMetric, SocketAddress remoteAddress) {
+              numberOfInboundConnections.decrementAndGet();
+            }
+          };
+        }
+      })
+      .buildClustered()
+      .await());
+    vertx.eventBus().request(ADDRESS1, "ping").await();
+    assertWaitUntil(() -> numberOfOutboundConnections.get() == 1 && numberOfInboundConnections.get() == 1);
+    ClusteredEventBus eventBus = (ClusteredEventBus) vertices[0].eventBus();
+    Future.future(eventBus::close).await();
+    assertWaitUntil(() -> numberOfOutboundConnections.get() == 0 && numberOfInboundConnections.get() == 0);
+  }
+
+  @Test
+  public void testHandleCloseRemovesStaleOutboundConnectionOnConnectFailure() {
+    AtomicInteger idx = new AtomicInteger();
+    startNodes(2, () -> new WrappedClusterManager(getClusterManager()) {
+      @Override
+      public void getNodeInfo(String nodeId, Completable<io.vertx.core.spi.cluster.NodeInfo> promise) {
+        if (idx.getAndIncrement() == 0) {
+          promise.fail("induced failure");
+        } else {
+          super.getNodeInfo(nodeId, promise);
+        }
+      }
+    });
+
+    vertices[1].eventBus().consumer(ADDRESS1, msg -> {
+      testComplete();
+    }).completion().await();
+
+    try {
+      vertices[0].eventBus().sender(ADDRESS1).write("will fail").await();
+      fail("Should have failed");
+    } catch (Exception e) {
+      vertices[0].eventBus().request(ADDRESS1, "will succeed");
+    }
+
+    await();
   }
 }

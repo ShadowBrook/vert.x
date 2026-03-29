@@ -15,6 +15,8 @@ import io.vertx.codegen.annotations.Nullable;
 import io.vertx.core.*;
 import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.internal.VertxInternal;
+import io.vertx.core.internal.WorkerExecutorInternal;
+import io.vertx.core.internal.WorkerPool;
 import io.vertx.core.spi.metrics.Metrics;
 import io.vertx.core.spi.metrics.MetricsProvider;
 import io.vertx.core.spi.metrics.PoolMetrics;
@@ -54,15 +56,25 @@ class WorkerExecutorImpl implements MetricsProvider, WorkerExecutorInternal {
   }
 
   @Override
-  public WorkerPool getPool() {
+  public WorkerPool pool() {
     return pool;
   }
 
   @Override
   public <T> Future<@Nullable T> executeBlocking(Callable<T> blockingCodeHandler, boolean ordered) {
     ContextInternal context = vertx.getOrCreateContext();
-    ContextImpl impl = context instanceof DuplicatedContext ? ((DuplicatedContext)context).delegate : (ContextImpl) context;
-    return ContextImpl.executeBlocking(context, blockingCodeHandler, pool, ordered ? impl.orderedTasks : null);
+    TaskQueue orderedTasks;
+    if (ordered) {
+      if (context instanceof ShadowContext) {
+        orderedTasks = ((ShadowContext)context).orderedTasks;
+      } else {
+        ContextImpl impl = context instanceof DuplicatedContext ? ((DuplicatedContext)context).delegate : (ContextImpl) context;
+        orderedTasks = impl.executeBlockingTasks;
+      }
+    } else {
+      orderedTasks = null;
+    }
+    return ExecuteBlocking.executeBlocking(pool, context, blockingCodeHandler, orderedTasks);
   }
 
   @Override

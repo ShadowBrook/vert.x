@@ -37,13 +37,14 @@ public class StressTest extends VertxTestBase {
     }
 
     void getConnection(FakeWaiter waiter) {
-      pool.acquire(waiter.context, 0, ar -> {
-        if (ar.succeeded()) {
-          waiter.handleConnection(ar.result());
-        } else {
-          waiter.handleFailure(ar.cause());
-        }
-      });
+      pool
+        .acquire(waiter.context, 0, (res, err) -> {
+          if (err == null) {
+            waiter.handleConnection(res);
+          } else {
+            waiter.handleFailure(err);
+          }
+        });
     }
 
     @Override
@@ -207,8 +208,9 @@ public class StressTest extends VertxTestBase {
 
     // This is synchronous
     CountDownLatch latch = new CountDownLatch(1);
-    mgr.pool.close(ar -> {
-      if (ar.succeeded()) {
+    mgr.pool
+      .close((res, err) -> {
+        if (err == null) {
 /*
         List<Future> list = (List) ar.result();
         CompositeFuture.all(list).onSuccess(c -> {
@@ -217,9 +219,9 @@ public class StressTest extends VertxTestBase {
           }
         });
 */
-      }
-      latch.countDown();
-    });
+        }
+        latch.countDown();
+      });
     awaitLatch(latch);
 
     // Check state at the end

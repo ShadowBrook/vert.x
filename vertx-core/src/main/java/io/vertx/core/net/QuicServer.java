@@ -1,0 +1,139 @@
+/*
+ * Copyright (c) 2011-2025 Contributors to the Eclipse Foundation
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0, or the Apache License, Version 2.0
+ * which is available at https://www.apache.org/licenses/LICENSE-2.0.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
+ */
+package io.vertx.core.net;
+
+import io.vertx.codegen.annotations.Fluent;
+import io.vertx.codegen.annotations.VertxGen;
+import io.vertx.core.Future;
+import io.vertx.core.Handler;
+import io.vertx.core.http.HttpServer;
+import io.vertx.core.net.impl.SocketAddressImpl;
+
+/**
+ * A Quic server.
+ *
+ * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
+ */
+@VertxGen
+public interface QuicServer extends QuicEndpoint {
+
+  /**
+   * Set the handler processing {@link QuicConnection}, the handler must be set before the server is bound.
+   * @param handler the connection handler
+   * @return this object instance
+   */
+  @Fluent
+  QuicServer connectHandler(Handler<QuicConnection> handler);
+
+  /**
+   * Set a handler processing incoming Quic streams, this is a short-cut of
+   * {@code server.connectHandler(connection -> connection.streamHandler(stream))}.
+   *
+   * @param handler the handler processing streams
+   * @return this object instance
+   */
+  @Fluent
+  default QuicServer streamHandler(Handler<QuicStream> handler) {
+    if (handler != null) {
+      return connectHandler(connection -> {
+        connection.streamHandler(handler);
+      });
+    } else {
+      return connectHandler(null);
+    }
+  }
+
+  /**
+   * Set an exception handler called for socket errors happening before the QUIC connection
+   * is established, e.g. during the TLS handshake.
+   *
+   * @param handler the handler to set
+   * @return a reference to this, so the API can be used fluently
+   */
+  @Fluent
+  QuicServer exceptionHandler(Handler<Throwable> handler);
+
+  /**
+   * Start listening on the {@code port} and {@code host} as configured in the {@link io.vertx.core.net.QuicServerConfig} used when
+   * creating the server.
+   *
+   * @return a future signaling the success or failure of the listen operation, the result is socket address
+   *        this endpoint is bound to
+   */
+  Future<SocketAddress> listen();
+
+  /**
+   * Start listening on the specified {@code port} and {@code host}.
+   * <p>
+   * Port {@code 0} can be specified meaning "choose a random port".
+   * <p>
+   * Host {@code 0.0.0.0} can be specified meaning "listen on all available interfaces".
+   *
+   * @return a future signaling the success or failure of the listen operation, the result is socket address
+   *        this endpoint is bound to
+   */
+  default Future<SocketAddress> listen(int port, String host) {
+    return listen(new SocketAddressImpl(port, host));
+  }
+
+  /**
+   * Start listening on the specified port and host "0.0.0.0".
+   * <p>
+   * Port {@code 0} can be specified meaning "choose an random port".
+   *
+   * @return a future signaling the success or failure of the listen operation, the result is socket address
+   *        this endpoint is bound to
+   */
+  default Future<SocketAddress> listen(int port) {
+    return listen(port, "0.0.0.0");
+  }
+
+  /**
+   * Start listening on the specified local address.
+   *
+   * @param localAddress the local address to listen on
+   * @return a future signaling the success or failure of the listen operation, the result is socket address
+   *        this endpoint is bound to
+   */
+  default Future<SocketAddress> listen(SocketAddress localAddress) {
+    return bind(localAddress);
+  }
+
+  /**
+   * <p>Update the server with new SSL {@code options}, the update happens if the options object is valid and different
+   * from the existing options object.
+   *
+   * <p>The boolean succeeded future result indicates whether the update occurred.
+   *
+   * @param options the new SSL options
+   * @return a future signaling the update success
+   */
+  default Future<Boolean> updateSSLOptions(ServerSSLOptions options) {
+    return updateSSLOptions(options, false);
+  }
+
+  /**
+   * <p>Update the server with new SSL {@code options}, the update happens if the options object is valid and different
+   * from the existing options object.
+   *
+   * <p>The {@code options} object is compared using its {@code equals} method against the existing options to prevent
+   * an update when the objects are equals since loading options can be costly, this can happen for share TCP servers.
+   * When object are equals, setting {@code force} to {@code true} forces the update.
+   *
+   * <p>The boolean succeeded future result indicates whether the update occurred.
+   *
+   * @param options the new SSL options
+   * @param force force the update when options are equals
+   * @return a future signaling the update success
+   */
+  Future<Boolean> updateSSLOptions(ServerSSLOptions options, boolean force);
+
+}

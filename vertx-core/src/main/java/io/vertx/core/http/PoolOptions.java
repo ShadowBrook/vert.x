@@ -15,6 +15,8 @@ import io.vertx.codegen.json.annotations.JsonGen;
 import io.vertx.core.impl.Arguments;
 import io.vertx.core.json.JsonObject;
 
+import java.util.concurrent.TimeUnit;
+
 /**
  * Options configuring a {@link HttpClient} pool.
  *
@@ -35,9 +37,24 @@ public class PoolOptions {
   public static final int DEFAULT_HTTP2_MAX_POOL_SIZE = 1;
 
   /**
+   * The default maximum number of connections an HTTP/3 client will pool = 1
+   */
+  public static final int DEFAULT_HTTP3_MAX_POOL_SIZE = 1;
+
+  /**
    * Default max wait queue size = -1 (unbounded)
    */
   public static final int DEFAULT_MAX_WAIT_QUEUE_SIZE = -1;
+
+  /**
+   * Default maximum pooled connection lifetime = 0 (no maximum)
+   */
+  public static final int DEFAULT_MAXIMUM_LIFETIME = 0;
+
+  /**
+   * Default maximum pooled connection lifetime unit = seconds
+   */
+  public static final TimeUnit DEFAULT_MAXIMUM_LIFETIME_TIME_UNIT = TimeUnit.SECONDS;
 
   /**
    * Default pool cleaner period = 1000 ms (1 second)
@@ -51,6 +68,9 @@ public class PoolOptions {
 
   private int http1MaxSize;
   private int http2MaxSize;
+  private int http3MaxSize;
+  private int maxLifetime;
+  private TimeUnit maxLifetimeUnit;
   private int cleanerPeriod;
   private int eventLoopSize;
   private int maxWaitQueueSize;
@@ -61,6 +81,9 @@ public class PoolOptions {
   public PoolOptions() {
     http1MaxSize = DEFAULT_MAX_POOL_SIZE;
     http2MaxSize = DEFAULT_HTTP2_MAX_POOL_SIZE;
+    http3MaxSize = DEFAULT_HTTP2_MAX_POOL_SIZE;
+    maxLifetime = DEFAULT_MAXIMUM_LIFETIME;
+    maxLifetimeUnit = DEFAULT_MAXIMUM_LIFETIME_TIME_UNIT;
     cleanerPeriod = DEFAULT_POOL_CLEANER_PERIOD;
     eventLoopSize = DEFAULT_POOL_EVENT_LOOP_SIZE;
     maxWaitQueueSize = DEFAULT_MAX_WAIT_QUEUE_SIZE;
@@ -74,6 +97,9 @@ public class PoolOptions {
   public PoolOptions(PoolOptions other) {
     this.http1MaxSize = other.http1MaxSize;
     this.http2MaxSize = other.http2MaxSize;
+    this.http3MaxSize = other.http3MaxSize;
+    this.maxLifetime = other.maxLifetime;
+    this.maxLifetimeUnit = other.maxLifetimeUnit;
     this.cleanerPeriod = other.cleanerPeriod;
     this.eventLoopSize = other.eventLoopSize;
     this.maxWaitQueueSize = other.maxWaitQueueSize;
@@ -131,6 +157,68 @@ public class PoolOptions {
       throw new IllegalArgumentException("http2MaxPoolSize must be > 0");
     }
     this.http2MaxSize = max;
+    return this;
+  }
+
+  /**
+   * Get the maximum pool size for HTTP/3 connections
+   *
+   * @return  the maximum pool size
+   */
+  public int getHttp3MaxSize() {
+    return http3MaxSize;
+  }
+
+  /**
+   * Set the maximum pool size for HTTP/3 connections
+   *
+   * @param max  the maximum pool size
+   * @return a reference to this, so the API can be used fluently
+   */
+  public PoolOptions setHttp3MaxSize(int max) {
+    if (max < 1) {
+      throw new IllegalArgumentException("http3MaxPoolSize must be > 0");
+    }
+    this.http3MaxSize = max;
+    return this;
+  }
+
+  /**
+   * @return the pooled connection max lifetime unit
+   */
+  public TimeUnit getMaxLifetimeUnit() {
+    return maxLifetimeUnit;
+  }
+
+  /**
+   * Establish a max lifetime unit for pooled connections.
+   *
+   * @param maxLifetimeUnit pooled connection max lifetime unit
+   * @return a reference to this, so the API can be used fluently
+   */
+  public PoolOptions setMaxLifetimeUnit(TimeUnit maxLifetimeUnit) {
+    this.maxLifetimeUnit = maxLifetimeUnit;
+    return this;
+  }
+
+  /**
+   * @return pooled connection max lifetime
+   */
+  public int getMaxLifetime() {
+    return maxLifetime;
+  }
+
+  /**
+   * Establish a max lifetime for pooled connections, a value of zero disables the maximum lifetime.
+   *
+   * @param maxLifetime the pool connection max lifetime
+   * @return a reference to this, so the API can be used fluently
+   */
+  public PoolOptions setMaxLifetime(int maxLifetime) {
+    if (maxLifetime < 0) {
+      throw new IllegalArgumentException("maxLifetime must be >= 0");
+    }
+    this.maxLifetime = maxLifetime;
     return this;
   }
 

@@ -35,7 +35,7 @@ class HttpClientRequestPushPromise extends HttpClientRequestBase {
     HttpMethod method,
     String uri,
     MultiMap headers) {
-    super(connection, stream, stream.connection().getContext().promise(), method, uri);
+    super(connection, stream, stream.connection().context().promise(), method, uri);
     this.stream = stream;
     this.headers = headers;
   }
@@ -167,6 +167,11 @@ class HttpClientRequestPushPromise extends HttpClientRequestBase {
 
   @Override
   public Future<Void> sendHead() {
+    throw new IllegalStateException();
+  }
+
+  @Override
+  public Future<HttpClientResponse> send(ClientForm form) {
     throw new IllegalStateException();
   }
 

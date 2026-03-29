@@ -10,44 +10,40 @@
  */
 package io.vertx.core.net.endpoint.impl;
 
+import io.vertx.core.Completable;
 import io.vertx.core.Future;
 import io.vertx.core.internal.net.endpoint.EndpointResolverInternal;
-import io.vertx.core.net.endpoint.EndpointNode;
-import io.vertx.core.net.endpoint.EndpointInteraction;
-import io.vertx.core.internal.ContextInternal;
+import io.vertx.core.net.endpoint.*;
 import io.vertx.core.internal.VertxInternal;
-import io.vertx.core.net.endpoint.InteractionMetrics;
-import io.vertx.core.net.endpoint.LoadBalancer;
 import io.vertx.core.net.Address;
 import io.vertx.core.net.SocketAddress;
-import io.vertx.core.net.impl.endpoint.Endpoint;
-import io.vertx.core.net.impl.endpoint.EndpointProvider;
-import io.vertx.core.net.endpoint.EndpointSelector;
+import io.vertx.core.internal.resource.ManagedResource;
+import io.vertx.core.internal.resource.ResourceManager;
 import io.vertx.core.spi.endpoint.EndpointResolver;
 import io.vertx.core.spi.endpoint.EndpointBuilder;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Iterator;
-import java.util.List;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiFunction;
+import java.util.function.Function;
+import java.util.function.Predicate;
 
 /**
- * A manager for endpoints.
+ * A resolver for endpoints.
  *
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
-public class EndpointResolverImpl<S, A extends Address, E> implements EndpointResolverInternal {
+public class EndpointResolverImpl<S, A extends Address, N> implements EndpointResolverInternal {
 
   private final VertxInternal vertx;
   private final LoadBalancer loadBalancer;
-  private final EndpointResolver<A, E, S, ListOfNodes> endpointResolver;
-  private final io.vertx.core.net.impl.endpoint.EndpointManager<A, ManagedEndpoint> endpointManager;
-  private final long expirationMillis;
+  private final EndpointResolver<A, N, S, ListOfServers> endpointResolver;
+  private final ResourceManager<A, ManagedEndpoint> endpointManager;
+  private final long keepAliveMillis;
 
-  public EndpointResolverImpl(VertxInternal vertx, EndpointResolver<A, E, S, ?> endpointResolver, LoadBalancer loadBalancer, long expirationMillis) {
+  public EndpointResolverImpl(VertxInternal vertx, EndpointResolver<A, N, S, ?> endpointResolver, LoadBalancer loadBalancer, long keepAliveMillis) {
 
     if (loadBalancer == null) {
       loadBalancer = LoadBalancer.ROUND_ROBIN;
@@ -55,9 +51,14 @@ public class EndpointResolverImpl<S, A extends Address, E> implements EndpointRe
 
     this.vertx = vertx;
     this.loadBalancer = loadBalancer;
-    this.endpointResolver = (EndpointResolver<A, E, S, ListOfNodes>) endpointResolver;
-    this.endpointManager = new io.vertx.core.net.impl.endpoint.EndpointManager<>();
-    this.expirationMillis = expirationMillis;
+    this.endpointResolver = (EndpointResolver<A, N, S, ListOfServers>) endpointResolver;
+    this.endpointManager = new ResourceManager<>();
+    this.keepAliveMillis = keepAliveMillis;
+  }
+
+  @Override
+  public boolean resolves(Address address) {
+    return endpointResolver.tryCast(address) != null;
   }
 
   /**
@@ -68,76 +69,70 @@ public class EndpointResolverImpl<S, A extends Address, E> implements EndpointRe
   }
 
   @Override
-  public Future<io.vertx.core.net.endpoint.Endpoint> resolveEndpoint(Address address) {
-    return lookupEndpoint2(vertx.getOrCreateContext(), address);
+  public int size() {
+    return endpointManager.size();
   }
 
-  public Future<io.vertx.core.net.endpoint.Endpoint> lookupEndpoint(ContextInternal ctx, Address address) {
-    return lookupEndpoint2(ctx, address);
+  @Override
+  public Future<io.vertx.core.net.endpoint.Endpoint> resolveEndpoint(Address address) {
+    return vertx.future(promise -> lookupEndpoint(address, promise));
+  }
+
+  public void lookupEndpoint(Address address, Completable<Endpoint> promise) {
+    A casted = endpointResolver.tryCast(address);
+    if (casted == null) {
+      promise.fail("Cannot resolve address " + address);
+      return;
+    }
+    ManagedEndpoint resolved = resolveAddress(casted);
+    resolved.endpoint.onComplete(promise);
   }
 
   private class EndpointImpl implements io.vertx.core.net.endpoint.Endpoint {
+
     private final AtomicLong lastAccessed;
     private final A address;
     private final S state;
+
     public EndpointImpl(A address, AtomicLong lastAccessed, S state) {
       this.state = state;
       this.address = address;
       this.lastAccessed = lastAccessed;
     }
+
     @Override
-    public List<EndpointNode> nodes() {
-      return endpointResolver.endpoint(state).nodes;
+    public Set<String> protocols() {
+      return endpointResolver.endpoint(state).protocols;
     }
-    public void close() {
+
+    @Override
+    public List<ServerEndpoint> servers() {
+      return endpointResolver.endpoint(state).servers;
+    }
+
+    public ServerEndpoint selectServer(Predicate<ServerEndpoint> filter, String key) {
+      ListOfServers listOfServers = endpointResolver.endpoint(state);
+      EndpointResolverImpl.View view = listOfServers.viewOf(loadBalancer, filter);
+      return view.selectEndpoint(key);
+    }
+
+    private void close() {
       endpointResolver.dispose(state);
     }
-    private EndpointNode selectEndpoint(S state, String routingKey) {
-      ListOfNodes listOfNodes = endpointResolver.endpoint(state);
-      int idx;
-      if (routingKey == null) {
-        idx = listOfNodes.selector.select();
-      } else {
-        idx = listOfNodes.selector.select(routingKey);
-      }
-      if (idx >= 0 && idx < listOfNodes.nodes.size()) {
-        return listOfNodes.nodes.get(idx);
-      }
-      return null;
-    }
-    public EndpointNode selectNode(String key) {
-      if (!endpointResolver.isValid(state)) {
-        throw new IllegalStateException("Cannot resolve address " + address );
-      }
-      EndpointNode endpoint = selectEndpoint(state, key);
-      if (endpoint == null) {
-        throw new IllegalStateException("No results for " + address );
-      }
-      return endpoint;
-    }
   }
 
-  private Future<io.vertx.core.net.endpoint.Endpoint> lookupEndpoint2(ContextInternal ctx, Address address) {
-    A casted = endpointResolver.tryCast(address);
-    if (casted == null) {
-      return ctx.failedFuture("Cannot resolve address " + address);
-    }
-    ManagedEndpoint resolved = resolveAddress(casted);
-    return (Future) resolved.endpoint;
-  }
-
-  private class ManagedEndpoint extends Endpoint {
+  private class ManagedEndpoint extends ManagedResource {
 
     private final Future<EndpointImpl> endpoint;
     private final AtomicBoolean disposed = new AtomicBoolean();
 
-    public ManagedEndpoint(Future<EndpointImpl> endpoint, Runnable dispose) {
-      super(dispose);
+    public ManagedEndpoint(Future<EndpointImpl> endpoint) {
+      super();
       this.endpoint = endpoint;
     }
 
     @Override
-    protected void dispose() {
+    protected void cleanup() {
       if (endpoint.succeeded()) {
         endpoint.result().close();
       }
@@ -145,7 +140,7 @@ public class EndpointResolverImpl<S, A extends Address, E> implements EndpointRe
 
     @Override
     protected void checkExpired() {
-      if (endpoint.succeeded() && expirationMillis > 0 && System.currentTimeMillis() - endpoint.result().lastAccessed.get() >= expirationMillis) {
+      if (endpoint.succeeded() && keepAliveMillis > 0 && System.currentTimeMillis() - endpoint.result().lastAccessed.get() >= keepAliveMillis) {
         if (disposed.compareAndSet(false, true)) {
           decRefCount();
         }
@@ -178,17 +173,42 @@ public class EndpointResolverImpl<S, A extends Address, E> implements EndpointRe
   }
 
   // Does not depend on address
-  private final EndpointProvider<A, ManagedEndpoint> provider = (key, dispose) -> {
+  private final Function<A, ManagedEndpoint> provider = (key) -> {
     Future<EndpointImpl> holder = resolve(key);
-    ManagedEndpoint endpoint = new ManagedEndpoint(holder, dispose);
+    ManagedEndpoint endpoint = new ManagedEndpoint(holder);
     endpoint.incRefCount();
     return endpoint;
   };
 
-  private final BiFunction<ManagedEndpoint, Boolean, Result> fn = (endpoint, created) -> new Result(endpoint.endpoint, endpoint, created);
+  private final BiFunction<ManagedEndpoint, Boolean, Result> fn = (endpoint, created) -> {
+    Result result = new Result(endpoint.endpoint, endpoint, created);
+    if (created) {
+      endpoint.endpoint.andThen(ar -> {
+        if (ar.succeeded()) {
+          ar.result().lastAccessed.set(System.currentTimeMillis());
+        }
+      });
+    }
+    return result;
+  };
 
   private ManagedEndpoint resolveAddress(A address) {
-    Result sFuture = endpointManager.withEndpoint2(address, provider, t -> true, fn);
+    Result sFuture = endpointManager.withResource(address, provider, managedEndpoint -> {
+      Future<EndpointImpl> fut = managedEndpoint.endpoint;
+      if (fut.succeeded()) {
+        EndpointImpl endpoint = fut.result();
+        if (!endpointResolver.isValid(endpoint.state)) {
+          Future<S> refresh = endpointResolver.refresh(address, endpoint.state);
+          if (refresh != null) {
+            return new ManagedEndpoint(refresh.map(s -> new EndpointImpl(address, endpoint.lastAccessed, s)));
+          } else {
+            // todo: should cleanup .... ????
+            return null;
+          }
+        }
+      }
+      return managedEndpoint;
+    }, fn);
     if (sFuture.created) {
       sFuture.fut.onFailure(err -> {
         if (sFuture.endpoint.disposed.compareAndSet(false, true)) {
@@ -201,29 +221,88 @@ public class EndpointResolverImpl<S, A extends Address, E> implements EndpointRe
     return sFuture.endpoint;
   }
 
-  private static class ListOfNodes implements Iterable<EndpointNode> {
-    final List<EndpointNode> nodes;
-    final EndpointSelector selector;
-    private ListOfNodes(List<EndpointNode> nodes, EndpointSelector selector) {
-      this.nodes = nodes;
+  private static class View {
+
+    private List<ServerEndpoint> servers;
+    private ServerSelector selector;
+
+    View(List<ServerEndpoint> servers, ServerSelector selector) {
+      this.servers = servers;
       this.selector = selector;
     }
-    @Override
-    public Iterator<EndpointNode> iterator() {
-      return nodes.iterator();
-    }
-    @Override
-    public String toString() {
-      return nodes.toString();
+
+    private ServerEndpoint selectEndpoint(String routingKey) {
+      int idx;
+      if (routingKey == null) {
+        idx = selector.select();
+      } else {
+        idx = selector.select(routingKey);
+      }
+      if (idx >= 0 && idx < servers.size()) {
+        return servers.get(idx);
+      }
+      return null;
     }
   }
 
-  public class EndpointNodeImpl implements EndpointNode {
+  private static class ListOfServers implements Iterable<ServerEndpoint> {
+
+    // Put stuff here I think ...
+    final List<ServerEndpoint> servers;
+    final Map<Predicate<ServerEndpoint>, View> views;
+    final Set<String> protocols;
+
+    private ListOfServers(List<ServerEndpoint> servers) {
+
+      Set<String> protocols = Collections.emptySet();
+      for (ServerEndpoint server : servers) {
+        String protocol = server.protocolId();
+        if (protocol != null) {
+          if (protocols.isEmpty()) {
+            protocols = new HashSet<>(3);
+          }
+          protocols.add(protocol);
+        }
+      }
+
+      this.servers = servers;
+      this.views = new ConcurrentHashMap<>();
+      this.protocols = protocols;
+    }
+
+    @Override
+    public Iterator<ServerEndpoint> iterator() {
+      return servers.iterator();
+    }
+
+    @Override
+    public String toString() {
+      return servers.toString();
+    }
+
+    View viewOf(LoadBalancer loadBalancer, Predicate<ServerEndpoint> filter) {
+      EndpointResolverImpl.View view = views.get(filter);
+      if (view == null) {
+        List<ServerEndpoint> l = new ArrayList<>(servers.size());
+        for (ServerEndpoint s : servers) {
+          if (filter.test(s)) {
+            l.add(s);
+          }
+        }
+        ServerSelector selector = loadBalancer.selector(l);
+        view = new EndpointResolverImpl.View(l,  selector);
+        views.put(filter, view);
+      }
+      return view;
+    }
+  }
+
+  public class ServerEndpointImpl implements ServerEndpoint {
     final AtomicLong lastAccessed;
     final String key;
-    final E endpoint;
+    final N endpoint;
     final InteractionMetrics<?> metrics;
-    public EndpointNodeImpl(AtomicLong lastAccessed, String key, E endpoint, InteractionMetrics<?> metrics) {
+    public ServerEndpointImpl(AtomicLong lastAccessed, String key, N endpoint, InteractionMetrics<?> metrics) {
       this.lastAccessed = lastAccessed;
       this.key = key;
       this.endpoint = endpoint;
@@ -246,13 +325,19 @@ public class EndpointResolverImpl<S, A extends Address, E> implements EndpointRe
       return endpointResolver.addressOf(endpoint);
     }
     @Override
-    public EndpointInteraction newInteraction() {
+    public String protocolId() {
+      return endpointResolver.protocolOf(endpoint);
+    }
+    @Override
+    public ServerInteraction newInteraction() {
       lastAccessed.set(System.currentTimeMillis());
       InteractionMetrics metrics = this.metrics;
       Object metric = metrics.initiateRequest();
-      return new EndpointInteraction() {
+      return new ServerInteraction() {
+        boolean connected;
         @Override
         public void reportRequestBegin() {
+          connected = true;
           metrics.reportRequestBegin(metric);
         }
         @Override
@@ -269,6 +354,9 @@ public class EndpointResolverImpl<S, A extends Address, E> implements EndpointRe
         }
         @Override
         public void reportFailure(Throwable failure) {
+//          if (!connected && failure instanceof ConnectException) {
+//            endpointResolver.reportFailure(endpoint, failure);
+//          }
           metrics.reportFailure(metric, failure);
         }
       };
@@ -281,30 +369,35 @@ public class EndpointResolverImpl<S, A extends Address, E> implements EndpointRe
 
   private Future<EndpointImpl> resolve(A address) {
     AtomicLong lastAccessed = new AtomicLong(System.currentTimeMillis());
-    EndpointBuilder<ListOfNodes, E> builder = new EndpointBuilder<>() {
+    EndpointBuilder<ListOfServers, N> builder = new EndpointBuilder<>() {
+
       @Override
-      public EndpointBuilder<ListOfNodes, E> addNode(E node, String key) {
-        List<EndpointNode> list = new ArrayList<>();
+      public EndpointBuilder<ListOfServers, N> addServer(N server, String key) {
+        List<ServerEndpoint> list = new ArrayList<>();
         InteractionMetrics<?> metrics = loadBalancer.newMetrics();
-        list.add(new EndpointNodeImpl(lastAccessed, key, node, metrics));
+        list.add(new ServerEndpointImpl(lastAccessed, key, server, metrics));
         return new EndpointBuilder<>() {
+
           @Override
-          public EndpointBuilder<ListOfNodes, E> addNode(E node, String key) {
+          public EndpointBuilder<ListOfServers, N> addServer(N server, String key) {
             InteractionMetrics<?> metrics = loadBalancer.newMetrics();
-            list.add(new EndpointNodeImpl(lastAccessed, key, node, metrics));
+            list.add(new ServerEndpointImpl(lastAccessed, key, server, metrics));
             return this;
           }
+
           @Override
-          public ListOfNodes build() {
-            return new ListOfNodes(list, loadBalancer.selector(list));
+          public ListOfServers build() {
+            return new ListOfServers(list);
           }
         };
       }
+
       @Override
-      public ListOfNodes build() {
-        return new ListOfNodes(Collections.emptyList(), () -> -1);
+      public ListOfServers build() {
+        return new ListOfServers(Collections.emptyList());
       }
     };
+
     return endpointResolver
       .resolve(address, builder)
       .map(s -> new EndpointImpl(address, lastAccessed, s));

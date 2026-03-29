@@ -10,17 +10,22 @@
  */
 package io.vertx.core.impl;
 
+import io.vertx.codegen.annotations.Unstable;
+import io.vertx.core.internal.http.HttpHeadersInternal;
+
 import java.io.File;
+import java.util.OptionalInt;
+import java.util.OptionalLong;
 
 /**
- * Vert.x known system properties.
+ * Vert.x system properties, most of them are internal and not supported.
  *
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
 public enum SysProps {
 
   /**
-   * Duplicate of {@link io.vertx.core.http.HttpHeaders#DISABLE_HTTP_HEADERS_VALIDATION}
+   * Duplicate of {@link HttpHeadersInternal#DISABLE_HTTP_HEADERS_VALIDATION}
    */
   DISABLE_HTTP_HEADERS_VALIDATION("vertx.disableHttpHeadersValidation"),
 
@@ -60,7 +65,6 @@ public enum SysProps {
 
   /**
    * Default value of {@link io.vertx.core.file.FileSystemOptions#DEFAULT_FILE_CACHING_DIR}
-   *
    */
   FILE_CACHE_DIR("vertx.cacheDirBase") {
     @Override
@@ -78,11 +82,39 @@ public enum SysProps {
   },
 
   /**
+   * Enable bytes caching of HTTP/1.x immutable response headers.
+   */
+  @Unstable
+  CACHE_IMMUTABLE_HTTP_RESPONSE_HEADERS("vertx.cacheImmutableHttpResponseHeaders"),
+
+  /**
+   * Enable common HTTP/1.x request headers to their lower case version
+   *
+   * <ul>
+   *   <li>host/Host: {@link io.vertx.core.http.HttpHeaders#HOST}</li>
+   *   <li>accept/Accept: {@link io.vertx.core.http.HttpHeaders#ACCEPT}</li>
+   *   <li>content-type/Content-Type: {@link io.vertx.core.http.HttpHeaders#CONTENT_TYPE}</li>
+   *   <li>content-length/Content-Length: {@link io.vertx.core.http.HttpHeaders#CONTENT_LENGTH}</li>
+   *   <li>connection/Connection: {@link io.vertx.core.http.HttpHeaders#CONNECTION}</li>
+   * </ul>
+   *
+   */
+  @Unstable
+  INTERN_COMMON_HTTP_REQUEST_HEADERS_TO_LOWER_CASE("vertx.internCommonHttpRequestHeadersToLowerCase"),
+
+  /**
    * Configure the Vert.x logger.
    *
    * Documented and tested.
    */
   LOGGER_DELEGATE_FACTORY_CLASS_NAME("vertx.logger-delegate-factory-class-name"),
+
+  JACKSON_DEFAULT_READ_MAX_NESTING_DEPTH("vertx.jackson.defaultReadMaxNestingDepth"),
+  JACKSON_DEFAULT_READ_MAX_DOC_LEN("vertx.jackson.defaultReadMaxDocumentLength"),
+  JACKSON_DEFAULT_READ_MAX_NUM_LEN("vertx.jackson.defaultReadMaxNumberLength"),
+  JACKSON_DEFAULT_READ_MAX_STRING_LEN("vertx.jackson.defaultReadMaxStringLength"),
+  JACKSON_DEFAULT_READ_MAX_NAME_LEN("vertx.jackson.defaultReadMaxNameLength"),
+  JACKSON_DEFAULT_READ_MAX_TOKEN_COUNT("vertx.jackson.defaultMaxTokenCount"),
 
   ;
 
@@ -94,6 +126,22 @@ public enum SysProps {
 
   public String get() {
     return System.getProperty(name);
+  }
+
+  public OptionalLong getAsLong() throws NumberFormatException {
+    String s = get();
+    if (s != null) {
+      return OptionalLong.of(Long.parseLong(s));
+    }
+    return OptionalLong.empty();
+  }
+
+  public OptionalInt getAsInt() throws NumberFormatException {
+    String s = get();
+    if (s != null) {
+      return OptionalInt.of(Integer.parseInt(s));
+    }
+    return OptionalInt.empty();
   }
 
   public boolean getBoolean() {

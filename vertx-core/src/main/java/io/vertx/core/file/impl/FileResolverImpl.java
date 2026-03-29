@@ -33,7 +33,7 @@ import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
-import static io.vertx.core.internal.net.URIDecoder.decodeURIComponent;
+import static io.vertx.core.internal.net.RFC3986.decodeURIComponent;
 
 /**
  * Sometimes the file resources of an application are bundled into jars, or are somewhere on the classpath but not
@@ -68,7 +68,7 @@ public class FileResolverImpl implements FileResolver {
     enableCPResolving = fileSystemOptions.isClassPathResolvingEnabled();
 
     if (enableCPResolving) {
-      cache = FileCache.setupCache(fileSystemOptions.getFileCacheDir());
+      cache = FileCache.setupCache(fileSystemOptions.getFileCacheDir(), fileSystemOptions.isFileCacheDirAsExactPath());
     } else {
       cache = null;
     }
@@ -96,7 +96,15 @@ public class FileResolverImpl implements FileResolver {
     }
   }
 
-  public File resolveFile(String fileName) {
+  public File resolve(String fileName) {
+    int idx = fileName.length() - 1;
+    if (idx >= 0 && fileName.charAt(idx) == '/') {
+      fileName = fileName.substring(0, idx);
+    }
+    return resolveFile2(fileName);
+  }
+
+  public File resolveFile2(String fileName) {
     // First look for file with that name on disk
     File file = new File(fileName);
     boolean absolute = file.isAbsolute();
@@ -104,9 +112,11 @@ public class FileResolverImpl implements FileResolver {
     if (this.cache == null) {
       return file;
     }
-    // We need to synchronized here to avoid 2 different threads to copy the file to the cache directory and so
-    // corrupting the content.
-    if (!file.exists()) {
+    // Java 25 considers that the empty always exists unlike previous versions, so we need
+    // to check that as well
+    if (file.getPath().isEmpty() || !file.exists()) {
+      // We need to synchronized here to avoid 2 different threads to copy the file to the cache directory and so
+      // corrupting the content.
       synchronized (cache) {
         // When an absolute file is here, if it falls under the cache directory, then it should be made relative as it
         // could mean that a previous resolution has been used to resolve a non local file system resource

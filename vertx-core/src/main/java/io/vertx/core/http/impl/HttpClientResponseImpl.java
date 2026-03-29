@@ -11,28 +11,26 @@
 
 package io.vertx.core.http.impl;
 
+import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.http.DefaultHttpHeaders;
+import io.vertx.codegen.annotations.Nullable;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.*;
 import io.vertx.core.http.impl.headers.HeadersAdaptor;
+import io.vertx.core.internal.buffer.BufferInternal;
 import io.vertx.core.internal.logging.Logger;
 import io.vertx.core.internal.logging.LoggerFactory;
 import io.vertx.core.net.NetSocket;
 import io.vertx.core.net.impl.ConnectionBase;
+import io.vertx.core.streams.WriteStream;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * This class is optimised for performance when used on the same event loop that is was passed to the handler with.
- * However it can be used safely from other threads.
- *
- * The internal state is protected using the synchronized keyword. If always used on the same event loop, then
- * we benefit from biased locking which makes the overhead of synchronized near zero.
- *
  * @author <a href="http://tfox.org">Tim Fox</a>
  */
 public class HttpClientResponseImpl implements HttpClientResponse  {
@@ -81,7 +79,39 @@ public class HttpClientResponseImpl implements HttpClientResponse  {
   @Override
   public NetSocket netSocket() {
     if (netSocket == null) {
-      netSocket = HttpNetSocket.netSocket((ConnectionBase) conn, request.context, this, stream);
+      netSocket = HttpNetSocket.netSocket(stream, request.context, this, new WriteStream<>() {
+        @Override
+        public WriteStream<Buffer> exceptionHandler(@Nullable Handler<Throwable> handler) {
+          stream.exceptionHandler(handler);
+          return this;
+        }
+        @Override
+        public Future<Void> write(Buffer data) {
+          return stream.writeChunk(data, false);
+        }
+        @Override
+        public Future<Void> end(Buffer data) {
+          return stream.writeChunk(data, true);
+        }
+        @Override
+        public Future<Void> end() {
+          return stream.writeChunk(BufferInternal.buffer(Unpooled.EMPTY_BUFFER), true);
+        }
+        @Override
+        public WriteStream<Buffer> setWriteQueueMaxSize(int maxSize) {
+          stream.setWriteQueueMaxSize(maxSize);
+          return this;
+        }
+        @Override
+        public boolean writeQueueFull() {
+          return !stream.isWritable();
+        }
+        @Override
+        public WriteStream<Buffer> drainHandler(@Nullable Handler<Void> handler) {
+          stream.drainHandler(handler);
+          return this;
+        }
+      });
     }
     return netSocket;
   }
@@ -195,7 +225,7 @@ public class HttpClientResponseImpl implements HttpClientResponse  {
 
   @Override
   public HttpClientResponse pause() {
-    stream.doPause();
+    stream.pause();
     return this;
   }
 
@@ -206,7 +236,7 @@ public class HttpClientResponseImpl implements HttpClientResponse  {
 
   @Override
   public HttpClientResponse fetch(long amount) {
-    stream.doFetch(amount);
+    stream.fetch(amount);
     return this;
   }
 
@@ -230,7 +260,6 @@ public class HttpClientResponseImpl implements HttpClientResponse  {
   }
 
   void handleChunk(Buffer data) {
-    request.dataReceived();
     HttpEventHandler handler;
     synchronized (conn) {
       handler = eventHandler;
@@ -240,7 +269,7 @@ public class HttpClientResponseImpl implements HttpClientResponse  {
     }
   }
 
-  void handleEnd(MultiMap trailers) {
+  void handleTrailers(MultiMap trailers) {
     HttpEventHandler handler;
     synchronized (conn) {
       this.trailers = trailers;

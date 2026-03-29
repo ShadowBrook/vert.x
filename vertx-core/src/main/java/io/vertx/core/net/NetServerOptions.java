@@ -147,6 +147,11 @@ public class NetServerOptions extends TCPSSLOptions {
   }
 
   @Override
+  protected ServerSSLOptions createSSLOptions() {
+    return new ServerSSLOptions();
+  }
+
+  @Override
   public NetServerOptions setSendBufferSize(int sendBufferSize) {
     super.setSendBufferSize(sendBufferSize);
     return this;
@@ -284,6 +289,11 @@ public class NetServerOptions extends TCPSSLOptions {
   @Override
   public NetServerOptions setTcpQuickAck(boolean tcpQuickAck) {
     return (NetServerOptions) super.setTcpQuickAck(tcpQuickAck);
+  }
+
+  @Override
+  public NetServerOptions setTcpUserTimeout(int tcpUserTimeout) {
+    return (NetServerOptions) super.setTcpUserTimeout(tcpUserTimeout);
   }
 
   @Override

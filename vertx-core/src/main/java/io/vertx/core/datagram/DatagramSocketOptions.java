@@ -24,7 +24,7 @@ import io.netty.handler.logging.ByteBufFormat;
  * @author <a href="http://tfox.org">Tim Fox</a>
  */
 @DataObject
-@JsonGen(publicConverter = false)
+@JsonGen(publicConverter = false, inheritConverter = true)
 public class DatagramSocketOptions extends NetworkOptions {
 
   /**
@@ -57,6 +57,11 @@ public class DatagramSocketOptions extends NetworkOptions {
    */
   public static final boolean DEFAULT_IPV6 = false;
 
+  private int sendBufferSize;
+  private int receiveBufferSize;
+  private int trafficClass;
+  private boolean reuseAddress;
+  private boolean reusePort;
   private boolean broadcast;
   private boolean loopbackModeDisabled;
   private int multicastTimeToLive;
@@ -79,6 +84,11 @@ public class DatagramSocketOptions extends NetworkOptions {
    */
   public DatagramSocketOptions(DatagramSocketOptions other) {
     super(other);
+    this.sendBufferSize = other.getSendBufferSize();
+    this.receiveBufferSize = other.getReceiveBufferSize();
+    this.reuseAddress = other.isReuseAddress();
+    this.trafficClass = other.getTrafficClass();
+    this.reusePort = other.reusePort;
     this.broadcast = other.isBroadcast();
     this.loopbackModeDisabled = other.isLoopbackModeDisabled();
     this.multicastTimeToLive = other.getMulticastTimeToLive();
@@ -98,6 +108,11 @@ public class DatagramSocketOptions extends NetworkOptions {
   }
 
   private void init() {
+    sendBufferSize = DEFAULT_SEND_BUFFER_SIZE;
+    receiveBufferSize = DEFAULT_RECEIVE_BUFFER_SIZE;
+    reuseAddress = DEFAULT_REUSE_ADDRESS;
+    trafficClass = DEFAULT_TRAFFIC_CLASS;
+    reusePort = DEFAULT_REUSE_PORT;
     broadcast = DEFAULT_BROADCAST;
     loopbackModeDisabled = DEFAULT_LOOPBACK_MODE_DISABLED;
     multicastTimeToLive = DEFAULT_MULTICAST_TIME_TO_LIVE;
@@ -106,46 +121,60 @@ public class DatagramSocketOptions extends NetworkOptions {
   }
 
   @Override
+  public boolean isReusePort() {
+    return reusePort;
+  }
+
+  @Override
+  public DatagramSocketOptions setReusePort(boolean reusePort) {
+    this.reusePort = reusePort;
+    return this;
+  }
+
+  @Override
   public int getSendBufferSize() {
-    return super.getSendBufferSize();
+    return sendBufferSize;
   }
 
   @Override
   public DatagramSocketOptions setSendBufferSize(int sendBufferSize) {
-    super.setSendBufferSize(sendBufferSize);
+    Arguments.require(sendBufferSize > 0  || sendBufferSize == DEFAULT_SEND_BUFFER_SIZE, "sendBufferSize must be > 0");
+    this.sendBufferSize = sendBufferSize;
     return this;
   }
 
   @Override
   public int getReceiveBufferSize() {
-    return super.getReceiveBufferSize();
+    return receiveBufferSize;
   }
 
   @Override
   public DatagramSocketOptions setReceiveBufferSize(int receiveBufferSize) {
-    super.setReceiveBufferSize(receiveBufferSize);
+    Arguments.require(receiveBufferSize > 0 || receiveBufferSize == DEFAULT_RECEIVE_BUFFER_SIZE, "receiveBufferSize must be > 0");
+    this.receiveBufferSize = receiveBufferSize;
     return this;
+  }
+
+  @Override
+  public boolean isReuseAddress() {
+    return reuseAddress;
   }
 
   @Override
   public DatagramSocketOptions setReuseAddress(boolean reuseAddress) {
-    super.setReuseAddress(reuseAddress);
+    this.reuseAddress = reuseAddress;
     return this;
   }
 
   @Override
-  public DatagramSocketOptions setReusePort(boolean reusePort) {
-    return (DatagramSocketOptions) super.setReusePort(reusePort);
-  }
-
-  @Override
   public int getTrafficClass() {
-    return super.getTrafficClass();
+    return trafficClass;
   }
 
   @Override
   public DatagramSocketOptions setTrafficClass(int trafficClass) {
-    super.setTrafficClass(trafficClass);
+    Arguments.requireInRange(trafficClass, NetworkOptions.DEFAULT_TRAFFIC_CLASS, 255, "trafficClass tc must be 0 <= tc <= 255");
+    this.trafficClass = trafficClass;
     return this;
   }
 
@@ -251,5 +280,12 @@ public class DatagramSocketOptions extends NetworkOptions {
   @Override
   public DatagramSocketOptions setActivityLogDataFormat(ByteBufFormat activityLogDataFormat) {
     return (DatagramSocketOptions) super.setActivityLogDataFormat(activityLogDataFormat);
+  }
+
+  @Override
+  public JsonObject toJson() {
+    JsonObject json = new JsonObject();
+    DatagramSocketOptionsConverter.toJson(this, json);
+    return json;
   }
 }

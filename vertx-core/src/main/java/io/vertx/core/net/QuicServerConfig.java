@@ -1,0 +1,242 @@
+/*
+ * Copyright (c) 2011-2025 Contributors to the Eclipse Foundation
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0, or the Apache License, Version 2.0
+ * which is available at https://www.apache.org/licenses/LICENSE-2.0.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
+ */
+package io.vertx.core.net;
+
+import io.vertx.codegen.annotations.DataObject;
+
+import java.time.Duration;
+import java.util.Objects;
+
+import static io.vertx.core.net.NetServerOptions.DEFAULT_HOST;
+import static io.vertx.core.net.NetServerOptions.DEFAULT_PORT;
+
+/**
+ * <p>Configuration of a Quic server.</p>
+ *
+ * <p>The default transport configuration, allows the server to accept bidi streams from a client with sensitive defaults values,
+ * it does not allow to accept uni streams nor allows the open streams toward the client.</p>
+ *
+ * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
+ */
+@DataObject
+public class QuicServerConfig extends QuicEndpointConfig {
+
+  public static final boolean DEFAULT_LOAD_BALANCED = false;
+  public static final QuicClientAddressValidation DEFAULT_CLIENT_ADDRESS_VALIDATION = QuicClientAddressValidation.BASIC;
+  public static final KeyCertOptions DEFAULT_CLIENT_ADDRESS_VALIDATION_KEY = null;
+  public static final Duration DEFAULT_CLIENT_ADDRESS_VALIDATION_TIME_WINDOW = Duration.ofSeconds(30);
+
+  private int port;
+  private String host;
+  private boolean loadBalanced;
+  private QuicClientAddressValidation clientAddressValidation;
+  private Duration clientAddressValidationTimeWindow;
+  private KeyCertOptions clientAddressValidationKey;
+
+  public QuicServerConfig() {
+    super(QuicConfig.forServer());
+
+    port = DEFAULT_PORT;
+    host = DEFAULT_HOST;
+    loadBalanced = DEFAULT_LOAD_BALANCED;
+    clientAddressValidation = DEFAULT_CLIENT_ADDRESS_VALIDATION;
+    clientAddressValidationKey = DEFAULT_CLIENT_ADDRESS_VALIDATION_KEY;
+    clientAddressValidationTimeWindow = DEFAULT_CLIENT_ADDRESS_VALIDATION_TIME_WINDOW;
+  }
+
+  public QuicServerConfig(QuicServerConfig other) {
+    super(other);
+
+    KeyCertOptions tokenValidationKey = other.clientAddressValidationKey;
+
+    this.port = other.port;
+    this.host = other.host;
+    this.loadBalanced = other.loadBalanced;
+    this.clientAddressValidation = other.clientAddressValidation;
+    this.clientAddressValidationTimeWindow = other.clientAddressValidationTimeWindow;
+    this.clientAddressValidationKey = tokenValidationKey != null ? tokenValidationKey.copy() : null;
+  }
+
+  @Override
+  public QuicServerConfig setTransportConfig(QuicConfig transportConfig) {
+    return (QuicServerConfig) super.setTransportConfig(transportConfig);
+  }
+
+  @Override
+  public QuicServerConfig setQLogConfig(QLogConfig qLogConfig) {
+    return (QuicServerConfig) super.setQLogConfig(qLogConfig);
+  }
+
+  @Override
+  public QuicServerConfig setKeyLogFile(String keyLogFile) {
+    return (QuicServerConfig) super.setKeyLogFile(keyLogFile);
+  }
+
+  @Override
+  public QuicServerConfig setIdleTimeout(Duration idleTimeout) {
+    return (QuicServerConfig) super.setIdleTimeout(idleTimeout);
+  }
+
+  @Override
+  public QuicServerConfig setReadIdleTimeout(Duration idleTimeout) {
+    return (QuicServerConfig) super.setReadIdleTimeout(idleTimeout);
+  }
+
+  @Override
+  public QuicServerConfig setWriteIdleTimeout(Duration idleTimeout) {
+    return (QuicServerConfig) super.setWriteIdleTimeout(idleTimeout);
+  }
+
+  @Override
+  public QuicServerConfig setLogConfig(LogConfig config) {
+    return (QuicServerConfig) super.setLogConfig(config);
+  }
+
+  @Override
+  public QuicServerConfig setMetricsName(String metricsName) {
+    return (QuicServerConfig) super.setMetricsName(metricsName);
+  }
+
+  @Override
+  public QuicServerConfig setMaxStreamBidiRequests(int maxStreamRequests) {
+    return (QuicServerConfig) super.setMaxStreamBidiRequests(maxStreamRequests);
+  }
+
+  @Override
+  public QuicServerConfig setMaxStreamUniRequests(int maxStreamRequests) {
+    return (QuicServerConfig) super.setMaxStreamUniRequests(maxStreamRequests);
+  }
+
+  @Override
+  public QuicServerConfig setReuseAddress(boolean reuseAddress) {
+    return (QuicServerConfig) super.setReuseAddress(reuseAddress);
+  }
+
+  /**
+   * @return the port
+   */
+  public int getPort() {
+    return port;
+  }
+
+  /**
+   * Set the port
+   *
+   * @param port  the port
+   * @return a reference to this, so the API can be used fluently
+   */
+  public QuicServerConfig setPort(int port) {
+    if (port > 65535) {
+      throw new IllegalArgumentException("port must be <= 65535");
+    }
+    this.port = port;
+    return this;
+  }
+
+  /**
+   *
+   * @return the host
+   */
+  public String getHost() {
+    return host;
+  }
+
+  /**
+   * Set the host
+   *
+   * @param host  the host
+   * @return a reference to this, so the API can be used fluently
+   */
+  public QuicServerConfig setHost(String host) {
+    this.host = host;
+    return this;
+  }
+
+  /**
+   * @return whether the server is load balanced
+   */
+  public boolean isLoadBalanced() {
+    return loadBalanced;
+  }
+
+  /**
+   * Set to {@code true} enables to bind multiples instances of a server on the same UDP port with the {@code SO_REUSE} options and let
+   * set of bound server route UDP packets to the correct server instance.
+   *
+   * @param loadBalanced whether the server can be load balanced
+   * @return this exact object instance
+   */
+  public QuicServerConfig setLoadBalanced(boolean loadBalanced) {
+    this.loadBalanced = loadBalanced;
+    return this;
+  }
+
+  /**
+   * @return whether the server performs address validation
+   */
+  public QuicClientAddressValidation getClientAddressValidation() {
+    return clientAddressValidation;
+  }
+
+  /**
+   * <p>Configure the server to validate the client address using a (retry) token, by default this feature is disabled.
+   * You should enable this feature for production servers.</p>
+   *
+   * <p>Client address validation requires you to also {@link #setClientAddressValidationKey(KeyCertOptions) set} a key for token signing/verification.</p>
+   *
+   * @param clientAddressValidation whether to perform address validation
+   * @return this exact object instance
+   */
+  public QuicServerConfig setClientAddressValidation(QuicClientAddressValidation clientAddressValidation) {
+    this.clientAddressValidation = Objects.requireNonNull(clientAddressValidation);
+    return this;
+  }
+
+  /**
+   * @return the client address validation token time window
+   */
+  public Duration getClientAddressValidationTimeWindow() {
+    return clientAddressValidationTimeWindow;
+  }
+
+  /**
+   * Set the time window by which a Quic token issued by the server to a client remains valid.
+   *
+   * @param clientAddressValidationTimeWindow the client address validation time window
+   * @return this exact object instance
+   */
+  public QuicServerConfig setClientAddressValidationTimeWindow(Duration clientAddressValidationTimeWindow) {
+    if (clientAddressValidationTimeWindow.isNegative() || clientAddressValidationTimeWindow.isZero()) {
+      throw new IllegalArgumentException("Token validation time window must be > 0");
+    }
+    this.clientAddressValidationTimeWindow = clientAddressValidationTimeWindow;
+    return this;
+  }
+
+  /**
+   * @return the cryptographic key used for client address validation tokens
+   */
+  public KeyCertOptions getClientAddressValidationKey() {
+    return clientAddressValidationKey;
+  }
+
+  /**
+   * Set the cryptographic key used for client address validation tokens, the {@code validationKey} must point to a
+   * keystore containing a private key / certificate pair or to a keystore containing symmetric key.
+   *
+   * @param validationKey the validation key
+   * @return this exact object instance
+   */
+  public QuicServerConfig setClientAddressValidationKey(KeyCertOptions validationKey) {
+    this.clientAddressValidationKey = validationKey;
+    return this;
+  }
+}

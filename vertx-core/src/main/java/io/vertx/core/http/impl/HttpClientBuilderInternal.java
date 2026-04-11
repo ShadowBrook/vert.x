@@ -167,7 +167,7 @@ public final class HttpClientBuilderInternal implements HttpClientBuilder {
     HttpClientOptions options = HttpClientBuilderInternal.this.clientOptions;
     Handler<HttpConnection> connectHandler = connectionHandler(config);
     List<HttpVersion> versions = config.getVersions();
-    return new HttpClientImpl(
+    return new LegacyHttpClient(
       vertx,
       resolver,
       redirectHandler,
@@ -187,16 +187,49 @@ public final class HttpClientBuilderInternal implements HttpClientBuilder {
       sslOptions,
       connectHandler,
       tcpTransport,
-      quicTransport) {
-      @Override
-      public HttpClientConfig config() {
-        return new HttpClientConfig(config);
-      }
-      @Override
-      public HttpClientOptions options() {
-        return options == null ? new HttpClientOptions() : new HttpClientOptions(options);
-      }
-    };
+      quicTransport,
+      config,
+      options);
+  }
+
+  private static class LegacyHttpClient extends HttpClientImpl {
+    private final HttpClientConfig config;
+    private final HttpClientOptions options;
+    public LegacyHttpClient(
+      VertxInternal vertx,
+      EndpointResolver resolver,
+      Function<HttpClientResponse, Future<RequestOptions>> redirectHandler, HttpClientMetrics<?, ?> httpMetrics,
+      PoolOptions poolOptions,
+      ProxyOptions defaultProxyOptions,
+      List<String> nonProxyHosts,
+      LoadBalancer loadBalancer,
+      boolean followAlternativeServices,
+      Duration resolverIdeTimeout,
+      boolean verifyHost,
+      boolean defaultSsl,
+      String defaultHost,
+      int defaultPort,
+      int maxRedirects,
+      List<HttpVersion> versions,
+      ClientSSLOptions sslOptions,
+      Handler<HttpConnection> connectHandler,
+      HttpClientTransport tcpTransport,
+      HttpClientTransport quicTransport,
+      HttpClientConfig config,
+      HttpClientOptions options) {
+      super(vertx, resolver, redirectHandler, httpMetrics, poolOptions, defaultProxyOptions, nonProxyHosts, loadBalancer, followAlternativeServices, resolverIdeTimeout, verifyHost, defaultSsl, defaultHost, defaultPort, maxRedirects, versions, sslOptions, connectHandler, tcpTransport, quicTransport);
+      this.config = config;
+      this.options = options;
+    }
+    @Override
+    public HttpClientOptions options() {
+      return options == null ? new HttpClientOptions() : new HttpClientOptions(options);
+    }
+
+    @Override
+    public HttpClientConfig config() {
+      return new HttpClientConfig(config);
+    }
   }
 
   private static TcpClientConfig netClientConfig(HttpClientConfig httpConfig) {
@@ -314,7 +347,7 @@ public final class HttpClientBuilderInternal implements HttpClientBuilder {
         cf_.add(completion -> impl.close().onComplete(completion));
         return impl;
       });
-      client = new CleanableHttpClient((HttpClientInternal) client, vertx.cleaner(), (timeout) -> closeFuture.close());
+      client = new CleanableHttpClient(client, vertx.cleaner(), timeout -> closeFuture.close());
       closeable = closeFuture;
     } else {
       HttpClientImpl impl = createHttpClientImpl(co2, ssl, httpMetrics, resolver, redirectHandler, transport, quicTransport);

@@ -7,8 +7,7 @@ open module io.vertx.core.tests {
   requires io.vertx.core;
   requires io.vertx.core.logging;
 
-  requires static assertj.core;
-  requires static org.hamcrest;
+  requires static org.assertj.core;
 
   requires junit;
   requires java.management;
@@ -38,6 +37,7 @@ open module io.vertx.core.tests {
   requires io.netty.handler.proxy;
   requires io.netty.codec.http3;
   requires io.netty.codec.dns;
+  requires jdk.management;
 
   provides VerticleFactory with ClasspathVerticleFactory, io.vertx.tests.vertx.AccessEventBusFromInitVerticleFactory;
 

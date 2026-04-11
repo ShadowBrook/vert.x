@@ -12,6 +12,11 @@ public class SimpleHttpTest extends AbstractHttpTest {
     this.config = config;
   }
 
+  public SimpleHttpTest(HttpConfig config, ReportMode reportMode) {
+    super(reportMode);
+    this.config = config;
+  }
+
   @Override
   public void setUp() throws Exception {
     super.setUp();

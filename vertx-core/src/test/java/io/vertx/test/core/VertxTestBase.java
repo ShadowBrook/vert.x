@@ -11,6 +11,7 @@
 
 package io.vertx.test.core;
 
+import io.netty.util.internal.PlatformDependent;
 import io.vertx.core.*;
 import io.vertx.core.internal.VertxInternal;
 import io.vertx.core.internal.logging.Logger;
@@ -25,10 +26,10 @@ import io.vertx.core.transport.Transport;
 import io.vertx.test.fakecluster.FakeClusterManager;
 import junit.framework.AssertionFailedError;
 import org.junit.Assert;
-import org.junit.Assume;
 import org.junit.Rule;
 
 import javax.net.ssl.SSLContext;
+import java.lang.ref.WeakReference;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -44,12 +45,49 @@ import java.util.function.Supplier;
  */
 public class VertxTestBase extends AsyncTestBase {
 
+  /**
+   * Test mode, note: this is temporary until migration is done.
+   */
+  public enum ReportMode {
+
+    /**
+     * The legacy / usual test mode
+     */
+    LEGACY,
+
+    /**
+     * Enable stateless assertions, relying on the thread to report failures:
+     * <ul>
+     *   <li>JUnit thread naturally reports failures to the runner</li>
+     *   <li>Vert.x thread relies on context task execution to report failure to Vert.x exception handler</li>
+     * </ul>
+     * This mode should only be used when migrated a test to spot incorrect usage of AsyncTestBase assertions made
+     * from a non instrumented thread that would miss test checks.
+     */
+    STATELESS,
+
+    /**
+     * Throw an exception upon any assertion, this mode should be used when the test is migrated, ensuring that
+     * the various reporting methods of {@link AsyncTestBase} are never called anymore.
+     */
+    FORBIDDEN
+  }
+
   public static final Transport TRANSPORT;
   public static final boolean USE_DOMAIN_SOCKETS = Boolean.getBoolean("vertx.useDomainSockets");
   public static final boolean USE_JAVA_MODULES = VertxTestBase.class.getModule().isNamed();
   private static final Logger log = LoggerFactory.getLogger(VertxTestBase.class);
+  protected static final String[] ENABLED_CIPHER_SUITES;
 
   static {
+
+    String[] suites = new String[0];
+    try {
+      suites = SSLContext.getDefault().getSocketFactory().getSupportedCipherSuites();
+    } catch (NoSuchAlgorithmException e) {
+      e.printStackTrace();
+    }
+    ENABLED_CIPHER_SUITES = suites;
 
     Transport transport = null;
     String transportName = System.getProperty("vertx.transport");
@@ -120,11 +158,71 @@ public class VertxTestBase extends AsyncTestBase {
   @Rule
   public FileDescriptorLeakDetectorRule fileDescriptorLeakDetectorRule = new FileDescriptorLeakDetectorRule();
 
+  private final ReportMode reportMode;
   protected Vertx vertx;
-
   protected Vertx[] vertices;
-
   private List<Vertx> created;
+  private Thread junitThread;
+  private Handler<Throwable> failureBridgeHandler;
+
+  public VertxTestBase(ReportMode reportMode) {
+    this.reportMode = reportMode;
+  }
+
+  public VertxTestBase() {
+    this(ReportMode.LEGACY);
+  }
+
+  @Override
+  protected void disableThreadChecks() {
+    if (reportMode != ReportMode.LEGACY) {
+      // Do nothing as we actually want to ensure that this is either
+      // - the JUnit main thread
+      // - a vertx context thread that we can fail to
+    } else {
+      super.disableThreadChecks();
+    }
+  }
+
+  @Override
+  protected void checkThread() {
+    switch (reportMode) {
+      case LEGACY:
+        super.checkThread();
+        break;
+      case STATELESS:
+        if (Thread.currentThread() == junitThread) {
+          // Ok
+        } else {
+          Context current = Vertx.currentContext();
+          if (current == null) {
+            System.out.println("Running test assertion from un-associated thread: " + Thread.currentThread());
+            new Exception().printStackTrace(System.out);
+          } else {
+            Handler<Throwable> handler = current.owner().exceptionHandler();
+            if (handler != failureBridgeHandler) {
+              System.out.println("Asserting from a vertx thread that is not relaying failures to the failure handler: " + Thread.currentThread());
+              new Exception().printStackTrace(System.out);
+            }
+          }
+        }
+        break;
+      case FORBIDDEN:
+        throw new AssertionError("Strictly forbidden to call an assertion on AsyncTestBase");
+    }
+  }
+
+  @Override
+  void handleThrowable(Throwable t) {
+    switch (reportMode) {
+      case STATELESS:
+        PlatformDependent.throwException(t);
+        break;
+      case LEGACY:
+        super.handleThrowable(t);
+        break;
+    }
+  }
 
   protected void vinit() {
     vertx = null;
@@ -133,6 +231,8 @@ public class VertxTestBase extends AsyncTestBase {
   }
 
   public void setUp() throws Exception {
+    failureBridgeHandler = new FailureBridgeHandler(this);
+    junitThread = Thread.currentThread();
     super.setUp();
     vinit();
     VertxOptions options = getOptions();
@@ -147,7 +247,7 @@ public class VertxTestBase extends AsyncTestBase {
         }
         throw afe;
       }
-      assertTrue(vertx.isNativeTransportEnabled());
+      Assert.assertTrue(vertx.isNativeTransportEnabled());
     }
   }
 
@@ -164,11 +264,17 @@ public class VertxTestBase extends AsyncTestBase {
   }
 
   protected void tearDown() throws Exception {
+    junitThread = null;
     if (created != null) {
       close(created);
     }
     FakeClusterManager.reset(); // Bit ugly
     super.tearDown();
+  }
+
+  @Override
+  public void await(long delay, TimeUnit timeUnit) {
+    super.await(delay, timeUnit);
   }
 
   protected void close(List<Vertx> instances) throws Exception {
@@ -215,7 +321,7 @@ public class VertxTestBase extends AsyncTestBase {
     Vertx vertx = createVertxBuilder(options).build();
     if (TRANSPORT != Transport.NIO) {
       if (!vertx.isNativeTransportEnabled()) {
-        fail(vertx.unavailableNativeTransportCause());
+        Assert.fail("Native transport is not enabled: " + vertx.unavailableNativeTransportCause());
       }
     }
     return vertx;
@@ -233,8 +339,19 @@ public class VertxTestBase extends AsyncTestBase {
       created = Collections.synchronizedList(new ArrayList<>());
     }
     Vertx vertx = supplier.get();
-    created.add(vertx);
+    add(vertx);
     return vertx;
+  }
+
+  private void add(Vertx vertx) {
+    if (reportMode != ReportMode.LEGACY) {
+      vertx.exceptionHandler(failureBridgeHandler);
+    }
+    created.add(vertx);
+  }
+
+  private void handleFailure(Throwable error) {
+    super.handleThrowable(error);
   }
 
   /**
@@ -253,9 +370,10 @@ public class VertxTestBase extends AsyncTestBase {
     }
     return createVertxBuilder(options)
       .withClusterManager(clusterManager)
-      .buildClustered().andThen(event -> {
+      .buildClustered()
+      .andThen(event -> {
         if (event.succeeded()) {
-          created.add(event.result());
+          add(event.result());
         }
       });
   }
@@ -277,47 +395,17 @@ public class VertxTestBase extends AsyncTestBase {
   }
 
   private void startNodes(int numNodes, VertxOptions options, Supplier<ClusterManager> clusterManagerSupplier) {
-    CountDownLatch latch = new CountDownLatch(numNodes);
     vertices = new Vertx[numNodes];
     for (int i = 0; i < numNodes; i++) {
-      int index = i;
       VertxOptions toUse = new VertxOptions(options);
       toUse.getEventBusOptions().setHost("localhost").setPort(0);
-      clusteredVertx(toUse, clusterManagerSupplier.get())
-        .onComplete(ar -> {
-          try {
-            if (ar.failed()) {
-              ar.cause().printStackTrace();
-            }
-            assertTrue("Failed to start node", ar.succeeded());
-            vertices[index] = ar.result();
-          } finally {
-            latch.countDown();
-          }
-        });
-    }
-    try {
-      assertTrue(latch.await(2, TimeUnit.MINUTES));
-    } catch (InterruptedException e) {
-      fail(e.getMessage());
+      vertices[i] = clusteredVertx(toUse, clusterManagerSupplier.get())
+        .await();
     }
   }
-
 
   protected static void setOptions(TCPSSLOptions sslOptions, KeyCertOptions options) {
     sslOptions.setKeyCertOptions(options);
-  }
-
-  protected static final String[] ENABLED_CIPHER_SUITES;
-
-  static {
-    String[] suites = new String[0];
-    try {
-      suites = SSLContext.getDefault().getSocketFactory().getSupportedCipherSuites();
-    } catch (NoSuchAlgorithmException e) {
-      e.printStackTrace();
-    }
-    ENABLED_CIPHER_SUITES = suites;
   }
 
   /**
@@ -360,5 +448,31 @@ public class VertxTestBase extends AsyncTestBase {
     Context current = Vertx.currentContext();
     assertNotNull(current);
     assertSameEventLoop(context, current);
+  }
+
+  /**
+   * Reports a failure to the test, this uses a weak reference to avoid keeping a path of references from the cleaner
+   * to the test that might contain references to cleanable objects, preventing those cleanable to be reclaimed:
+   *
+   * --> CleanerImpl#phantomCleanableList
+   * --> PhantomCleanableRef#action
+   * --> CleanableNetClient.Action#client
+   * --> NetClient#vertx
+   * --> Vertx#exceptionHandler
+   * --> FailureBridgeHandler#test
+   * --> NetTest#client
+   * --> CleanableNetClient
+   */
+  private static class FailureBridgeHandler extends WeakReference<VertxTestBase> implements Handler<Throwable> {
+    public FailureBridgeHandler(VertxTestBase referent) {
+      super(referent);
+    }
+    @Override
+    public void handle(Throwable failure) {
+      VertxTestBase test = get();
+      if (test != null) {
+        test.handleFailure(failure);
+      }
+    }
   }
 }

@@ -31,7 +31,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
 
-import static io.vertx.core.http.HttpHeaders.CONTENT_LENGTH;
+import static io.vertx.core.http.HttpHeaders.*;
 import static io.vertx.core.http.impl.HttpClientImpl.ABS_URI_START_PATTERN;
 
 /**
@@ -488,25 +488,14 @@ public class HttpClientRequestImpl extends HttpClientRequestBase implements Http
     return write(BufferInternal.buffer(chunk, enc), false);
   }
 
-  private boolean requiresContentLength() {
-    return !chunked && !headers.contains(CONTENT_LENGTH) && !isConnect;
-  }
-
   private Future<Void> write(Buffer buff, boolean end) {
-    if (end) {
-      if (buff != null && requiresContentLength()) {
-        headers().set(CONTENT_LENGTH, HttpUtils.positiveLongToString(buff.length()));
-      }
-    } else if (requiresContentLength()) {
-      throw new IllegalStateException("You must set the Content-Length header to be the total size of the message "
-        + "body BEFORE sending any data if you are not using HTTP chunked encoding.");
-    }
     return doWrite(buff, end, false);
   }
 
   private Future<Void> doWrite(Buffer buff, boolean end, boolean connect) {
     boolean writeHead;
     boolean writeEnd;
+    boolean chunked;
     synchronized (this) {
       if (reset != null) {
         return context.failedFuture(reset);
@@ -515,12 +504,24 @@ public class HttpClientRequestImpl extends HttpClientRequestBase implements Http
         return context.failedFuture(new IllegalStateException("Request already complete"));
       }
       if (!headersSent) {
+        if (!connect) {
+          boolean requiresContentLength = !this.chunked && !headers.contains(CONTENT_LENGTH);
+          if (end) {
+            if (buff != null && requiresContentLength) {
+              headers().set(CONTENT_LENGTH, HttpUtils.positiveLongToString(buff.length()));
+            }
+          } else if (requiresContentLength) {
+            headers.set(TRANSFER_ENCODING, CHUNKED);
+            this.chunked = true;
+          }
+        }
         headersSent = true;
         isConnect = connect;
         writeHead = true;
       } else {
         writeHead = false;
       }
+      chunked = this.chunked;
       writeEnd = !isConnect && end;
       trailersSent = end;
     }

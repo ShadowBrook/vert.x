@@ -22,6 +22,13 @@ import io.vertx.core.net.SocketAddress;
  */
 public class HttpTestBase extends AbstractHttpTest {
 
+  public HttpTestBase(ReportMode reportMode) {
+    super(reportMode);
+  }
+
+  public HttpTestBase() {
+  }
+
   @Override
   protected HttpClientAgent createHttpClient() {
     return vertx.createHttpClient(createBaseClientOptions());

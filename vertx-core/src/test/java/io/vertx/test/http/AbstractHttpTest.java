@@ -48,7 +48,13 @@ public abstract class AbstractHttpTest extends VertxTestBase {
   protected HttpClientAgent client;
   protected SocketAddress testAddress;
   protected RequestOptions requestOptions;
-  private File tmp;
+
+  public AbstractHttpTest(ReportMode reportMode) {
+    super(reportMode);
+  }
+
+  public AbstractHttpTest() {
+  }
 
   protected abstract HttpServer createHttpServer();
 
@@ -80,6 +86,13 @@ public abstract class AbstractHttpTest extends VertxTestBase {
     super.setUp();
     server = createHttpServer();
     client = createHttpClient();
+  }
+
+  @Override
+  protected void tearDown() throws Exception {
+    super.tearDown();
+    server = null;
+    client = null;
   }
 
   protected void startServer() throws Exception {

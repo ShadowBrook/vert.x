@@ -38,13 +38,12 @@ import io.vertx.test.core.*;
 import io.vertx.test.fakedns.DnsRecord;
 import io.vertx.test.fakedns.WithDnsServer;
 import io.vertx.test.fakestream.FakeStream;
-import io.vertx.test.http.HttpClientConfig;
-import io.vertx.test.http.HttpConfig;
+import io.vertx.test.http.HttpClientConfigurator;
+import io.vertx.test.http.HttpConfigurator;
 import io.vertx.test.http.SimpleHttpTest2;
 import io.vertx.tests.http.http3.Http3Test;
 import org.assertj.core.api.AbstractThrowableAssert;
 import org.junit.Assert;
-import org.junit.Before;
 import org.junit.Test;
 
 import java.io.*;
@@ -75,7 +74,7 @@ import static org.junit.Assume.assumeTrue;
  */
 public abstract class HttpTest extends SimpleHttpTest2 {
 
-  protected HttpTest(HttpConfig config) {
+  protected HttpTest(HttpConfigurator config) {
     super(config);
   }
 
@@ -828,6 +827,60 @@ public abstract class HttpTest extends SimpleHttpTest2 {
     });
     startServer(testAddress);
     sendAndAwait(new RequestOptions(requestOptions).setURI(reqUri));
+  }
+
+  @Test
+  public void testConfigureQueryParamsCharsetDecoding() throws Exception {
+    testConfigureQueryParamsDecoding(
+      new QueryParamDecoderConfig().setCharset(StandardCharsets.ISO_8859_1),
+      "/?param=%E2%82%AC",
+      params -> {
+        String val = params.get("param");
+        assertEquals("\u00E2\u0082\u00AC", val);
+      });
+  }
+
+  @Test
+  public void testConfigureQueryParamsSemicolonDelimiterDecoding() throws Exception {
+    MultiMap p = TestUtils.randomMultiMap(10);
+    testConfigureQueryParamsDecoding(
+      new QueryParamDecoderConfig().setUseSemicolonAsDelimiter(false),
+      "/some?" + generateQueryString(p, ';'),
+      params -> {
+        assertEquals(params.size(), params.size());
+        for (Map.Entry<String, String> entry : params) {
+          assertEquals(entry.getValue(), params.get(entry.getKey()));
+        }
+      });
+  }
+
+  @Test
+  public void testConfigureQueryParamsMaxSizeDecoding() throws Exception {
+    int maxSize = 10;
+    MultiMap p = TestUtils.randomMultiMap(maxSize + 1);
+    testConfigureQueryParamsDecoding(
+      new QueryParamDecoderConfig().setMaxSize(maxSize),
+      "/some?" + generateQueryString(p, '&'),
+      params -> {
+        assertEquals(maxSize, params.size());
+        for (Map.Entry<String, String> entry : params) {
+          assertEquals(entry.getValue(), params.get(entry.getKey()));
+        }
+      });
+  }
+
+  private void testConfigureQueryParamsDecoding(QueryParamDecoderConfig queryParamDecoderConfig, String uri, Consumer<MultiMap> checker) throws Exception {
+    server = vertx.httpServerBuilder()
+      .with(config.forServer()
+        .config().setQueryParamConfig(queryParamDecoderConfig))
+      .with(config.forServer().sslOptions())
+      .build();
+    server.requestHandler(req -> {
+      checker.accept(req.params());
+      req.response().end();
+    });
+    startServer(testAddress);
+    sendAndAwait(new RequestOptions(requestOptions).setURI(uri));
   }
 
   @Test
@@ -4347,11 +4400,11 @@ public abstract class HttpTest extends SimpleHttpTest2 {
     server.requestHandler(req -> {
       req.response().end();
     });
-    HttpClientConfig options = config.forClient().setKeepAliveTimeout(Duration.ofSeconds(3));
+    HttpClientConfigurator options = config.forClient().setKeepAliveTimeout(Duration.ofSeconds(3));
     testKeepAliveTimeout(checkpoint, options, new PoolOptions(), 1);
   }
 
-  protected void testKeepAliveTimeout(Checkpoint checkpoint, HttpClientConfig options, PoolOptions poolOptions, int numReqs) throws Exception {
+  protected void testKeepAliveTimeout(Checkpoint checkpoint, HttpClientConfigurator options, PoolOptions poolOptions, int numReqs) throws Exception {
     startServer(testAddress);
     client = options.create(vertx, poolOptions.setCleanerPeriod(1));
     AtomicInteger respCount = new AtomicInteger();
@@ -4387,7 +4440,7 @@ public abstract class HttpTest extends SimpleHttpTest2 {
     testPoolNotExpiring(checkpoint, config.forClient().setKeepAliveTimeout(Duration.ofSeconds(0)), new PoolOptions().setCleanerPeriod(10));
   }
 
-  private void testPoolNotExpiring(Checkpoint checkpoint, HttpClientConfig options, PoolOptions poolOptions) throws Exception {
+  private void testPoolNotExpiring(Checkpoint checkpoint, HttpClientConfigurator options, PoolOptions poolOptions) throws Exception {
     AtomicLong now = new AtomicLong();
     server.requestHandler(req -> {
       req.response().end();

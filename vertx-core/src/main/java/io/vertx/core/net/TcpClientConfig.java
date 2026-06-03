@@ -15,6 +15,7 @@ import io.vertx.codegen.annotations.DataObject;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import io.vertx.codegen.annotations.Unstable;
 
 /**
  * Configuration of a {@link NetClient}
@@ -22,6 +23,7 @@ import java.util.List;
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
 @DataObject
+@Unstable
 public class TcpClientConfig extends TcpEndpointConfig {
 
   private Duration connectTimeout;
@@ -107,16 +109,16 @@ public class TcpClientConfig extends TcpEndpointConfig {
   }
 
   /**
-   * Set the connect timeout
+   * Set the connect timeout, the value must be greater or equals than zero, use {@code 0} to disable timeout.
    *
-   * @param connectTimeout  connect timeout, in ms
+   * @param timeout  connect timeout, in ms
    * @return a reference to this, so the API can be used fluently
    */
-  public TcpClientConfig setConnectTimeout(Duration connectTimeout) {
-    if (connectTimeout.isNegative() || connectTimeout.isZero()) {
+  public TcpClientConfig setConnectTimeout(Duration timeout) {
+    if (timeout.isNegative()) {
       throw new IllegalArgumentException("connectTimeout must be >= 0");
     }
-    this.connectTimeout = connectTimeout;
+    this.connectTimeout = timeout;
     return this;
   }
 

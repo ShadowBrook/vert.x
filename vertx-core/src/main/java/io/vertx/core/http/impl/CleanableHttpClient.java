@@ -25,7 +25,6 @@ import io.vertx.core.net.ClientSSLOptions;
 import io.vertx.core.spi.metrics.Metrics;
 
 import java.lang.ref.Cleaner;
-import java.time.Duration;
 import java.util.function.Function;
 
 /**
@@ -62,7 +61,8 @@ public class CleanableHttpClient extends CleanableObject<HttpClientInternal> imp
 
   @Override
   public Metrics getMetrics() {
-    return getOrDie().getMetrics();
+    HttpClientInternal delegate = get();
+    return delegate == null ? null : delegate.getMetrics();
   }
 
   @Override

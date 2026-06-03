@@ -1,10 +1,7 @@
 package io.vertx.core.json.jackson;
 
 import java.lang.invoke.MethodHandle;
-import java.lang.invoke.MethodHandles;
-import java.lang.invoke.MethodType;
 import java.util.concurrent.atomic.AtomicReferenceArray;
-import java.util.function.Predicate;
 import java.util.stream.IntStream;
 
 import com.fasterxml.jackson.core.util.BufferRecycler;
@@ -141,8 +138,8 @@ public class HybridJacksonPool implements RecyclerPool<BufferRecycler> {
       Node next = topStacks.get(vThreadBufferRecycler.slot);
       while (true) {
         newHead.level = next == null ? 1 : next.level + 1;
+        newHead.next = next;
         if (topStacks.compareAndSet(vThreadBufferRecycler.slot, next, newHead)) {
-          newHead.next = next;
           return;
         } else {
           next = topStacks.get(vThreadBufferRecycler.slot);

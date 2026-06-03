@@ -21,7 +21,6 @@ import io.vertx.core.net.*;
 import io.vertx.core.spi.metrics.Metrics;
 
 import java.lang.ref.Cleaner;
-import java.time.Duration;
 
 /**
  * A lightweight proxy of Vert.x {@link NetClient} that can be collected by the garbage collector and release
@@ -86,6 +85,7 @@ public class CleanableNetClient extends CleanableObject<NetClientInternal> imple
 
   @Override
   public Metrics getMetrics() {
-    return getOrDie().getMetrics();
+    NetClientInternal delegate = get();
+    return delegate == null ? null : delegate.getMetrics();
   }
 }

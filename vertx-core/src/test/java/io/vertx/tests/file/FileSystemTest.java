@@ -23,7 +23,6 @@ import io.vertx.core.file.impl.AsyncFileImpl;
 import io.vertx.core.impl.Utils;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.streams.ReadStream;
-import io.vertx.test.core.Repeat;
 import io.vertx.test.core.TestUtils;
 import io.vertx.test.core.VertxTestBase;
 import org.junit.Assume;
@@ -517,6 +516,7 @@ public class FileSystemTest extends VertxTestBase {
 
   @Test
   public void testChownToRootFails() throws Exception {
+    Assume.assumeFalse("Running as root, chown to root will succeed", "root".equals(System.getProperty("user.name")));
     testChownFails("root");
   }
 

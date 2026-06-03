@@ -75,7 +75,6 @@ import java.io.InputStream;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.lang.ref.Cleaner;
-import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -92,11 +91,6 @@ import java.util.stream.Collectors;
 public class VertxImpl implements VertxInternal, MetricsProvider {
 
   private static String version;
-
-  /**
-   * Default shared cleaner for Vert.x
-   */
-  private static final Cleaner cleaner = Cleaner.create();
 
   /**
    * Context dispatch info for context running with non vertx threads (Loom).
@@ -372,14 +366,14 @@ public class VertxImpl implements VertxInternal, MetricsProvider {
       .build();
     CloseFuture fut = resolveCloseFuture();
     fut.add(netClient);
-    return new CleanableNetClient( cleaner, netClient);
+    return new CleanableNetClient(CleanerProvider.INSTANCE.get(), netClient);
   }
 
   public NetClient createNetClient(NetClientOptions options) {
     NetClientImpl netClient = new NetClientBuilder(this, options).build();
     CloseFuture fut = resolveCloseFuture();
     fut.add(netClient);
-    return new CleanableNetClient(cleaner, netClient);
+    return new CleanableNetClient(CleanerProvider.INSTANCE.get(), netClient);
   }
 
   @Override
@@ -389,7 +383,7 @@ public class VertxImpl implements VertxInternal, MetricsProvider {
 
   @Override
   public Cleaner cleaner() {
-    return cleaner;
+    return CleanerProvider.INSTANCE.get();
   }
 
   @Override
@@ -430,12 +424,12 @@ public class VertxImpl implements VertxInternal, MetricsProvider {
         cf_.add(completion -> impl.close().onComplete(completion));
         return impl;
       });
-      client = new CleanableWebSocketClient(client, cleaner, (timeout) -> closeFuture.close());
+      client = new CleanableWebSocketClient(client, CleanerProvider.INSTANCE.get(), (timeout) -> closeFuture.close());
       closeable = closeFuture;
     } else {
       WebSocketClientImpl impl = createWebSocketClientImpl(options);
       closeable = impl;
-      client = new CleanableWebSocketClient(impl, cleaner, impl::shutdown);
+      client = new CleanableWebSocketClient(impl, CleanerProvider.INSTANCE.get(), impl::shutdown);
     }
     cf.add(closeable);
     return client;
@@ -1124,7 +1118,7 @@ public class VertxImpl implements VertxInternal, MetricsProvider {
     WorkerPool sharedWorkerPool = createSharedWorkerPool(execCf, name, poolSize, maxExecuteTime, maxExecuteTimeUnit);
     CloseFuture parentCf = resolveCloseFuture();
     parentCf.add(execCf);
-    return new WorkerExecutorImpl(this, cleaner, sharedWorkerPool);
+    return new WorkerExecutorImpl(this, CleanerProvider.INSTANCE.get(), sharedWorkerPool);
   }
 
   public WorkerPool createSharedWorkerPool(String name, int poolSize, long maxExecuteTime, TimeUnit maxExecuteTimeUnit) {

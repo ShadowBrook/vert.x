@@ -11,31 +11,16 @@
 package io.vertx.tests.http.http3;
 
 import io.vertx.core.ThreadingModel;
-import io.vertx.core.Vertx;
 import io.vertx.core.http.*;
-import io.vertx.test.core.TestUtils;
-import io.vertx.test.fakemetrics.*;
-import io.vertx.test.http.HttpTestBase;
-import io.vertx.test.tls.Cert;
-import io.vertx.test.tls.Trust;
-import io.vertx.tests.http.Http2TestBase;
 import io.vertx.tests.metrics.HttpMetricsTestBase;
-import org.junit.Assume;
 import org.junit.Ignore;
 import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
 
-import java.time.Duration;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.concurrent.atomic.AtomicInteger;
 
 public class Http3MetricsTest extends HttpMetricsTestBase {
 
   public Http3MetricsTest() {
-    super(Http3Config.INSTANCE, HttpVersion.HTTP_3, ThreadingModel.EVENT_LOOP);
+    super(Http3Configurator.INSTANCE, HttpVersion.HTTP_3, ThreadingModel.EVENT_LOOP);
   }
 
   @Ignore

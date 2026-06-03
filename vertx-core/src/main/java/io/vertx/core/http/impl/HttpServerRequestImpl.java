@@ -28,20 +28,17 @@ import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.*;
 import io.vertx.core.internal.ContextInternal;
-import io.vertx.core.internal.http.HttpServerRequestInternal;
+import io.vertx.core.internal.http.QueryParamDecoder;
 import io.vertx.core.net.HostAndPort;
 import io.vertx.core.net.NetSocket;
 import io.vertx.core.net.SocketAddress;
 
-import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
-import java.util.Objects;
 import java.util.Set;
 
 /**
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
-public class HttpServerRequestImpl extends HttpServerRequestInternal {
+public class HttpServerRequestImpl extends HttpServerRequestBase {
 
   private final ContextInternal context;
   private final HttpServerStream stream;
@@ -61,9 +58,6 @@ public class HttpServerRequestImpl extends HttpServerRequestInternal {
   private MultiMap headersMap;
   private HostAndPort authority;
   private HostAndPort realAuthority;
-  private Charset paramsCharset = StandardCharsets.UTF_8;
-  private MultiMap params;
-  private boolean semicolonIsNormalCharInParams;
   private String absoluteURI;
   private MultiMap attributes;
   private HttpEventHandler eventHandler;
@@ -79,7 +73,9 @@ public class HttpServerRequestImpl extends HttpServerRequestInternal {
                                int maxFormAttributeSize,
                                int maxFormFields,
                                int maxFormBufferedBytes,
+                               QueryParamDecoder queryParamDecoder,
                                String serverOrigin) {
+    super(queryParamDecoder);
     this.handler = handler;
     this.context = context;
     this.stream = stream;
@@ -376,32 +372,6 @@ public class HttpServerRequestImpl extends HttpServerRequestInternal {
   @Override
   public MultiMap headers() {
     return headersMap;
-  }
-
-  @Override
-  public HttpServerRequest setParamsCharset(String charset) {
-    Objects.requireNonNull(charset, "Charset must not be null");
-    Charset current = paramsCharset;
-    paramsCharset = Charset.forName(charset);
-    if (!paramsCharset.equals(current)) {
-      params = null;
-    }
-    return this;
-  }
-
-  @Override
-  public String getParamsCharset() {
-    return paramsCharset.name();
-  }
-  @Override
-  public MultiMap params(boolean semicolonIsNormalChar) {
-    synchronized (connection) {
-      if (params == null || semicolonIsNormalChar != semicolonIsNormalCharInParams) {
-        params = HttpUtils.params(uri(), paramsCharset, semicolonIsNormalChar);
-        semicolonIsNormalCharInParams = semicolonIsNormalChar;
-      }
-      return params;
-    }
   }
 
   @Override

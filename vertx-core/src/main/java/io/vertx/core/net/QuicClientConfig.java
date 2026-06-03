@@ -13,6 +13,7 @@ package io.vertx.core.net;
 import io.vertx.codegen.annotations.DataObject;
 
 import java.time.Duration;
+import io.vertx.codegen.annotations.Unstable;
 
 /**
  * <p>Configuration of a Quic client.</p>
@@ -23,6 +24,7 @@ import java.time.Duration;
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
 @DataObject
+@Unstable
 public class QuicClientConfig extends QuicEndpointConfig {
 
   /**
@@ -126,7 +128,7 @@ public class QuicClientConfig extends QuicEndpointConfig {
   }
 
   /**
-   * Set the connect timeout.
+   * Set the connect timeout, the value must be greater or equals than zero, use {@code 0} to disable timeout.
    *
    * @param connectTimeout  connect timeout
    * @return a reference to this, so the API can be used fluently

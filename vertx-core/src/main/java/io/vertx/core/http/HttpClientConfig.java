@@ -14,7 +14,6 @@ import io.vertx.codegen.annotations.DataObject;
 import io.vertx.codegen.annotations.GenIgnore;
 import io.vertx.codegen.annotations.Unstable;
 import io.vertx.core.net.*;
-import io.vertx.core.tracing.TracingPolicy;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -27,6 +26,7 @@ import java.util.Objects;
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
 @DataObject
+@Unstable
 public class HttpClientConfig {
 
   private static List<HttpVersion> toSupportedVersion(HttpVersion version) {
@@ -505,7 +505,6 @@ public class HttpClientConfig {
   /**
    * @return whether the client follows alternative services advertisements
    */
-  @Unstable
   public boolean getFollowAlternativeServices() {
     return followAlternativeServices;
   }

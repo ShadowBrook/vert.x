@@ -40,7 +40,6 @@ import javax.net.ssl.SSLSession;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 
 import static io.vertx.core.net.impl.VertxHandler.*;
 
@@ -205,7 +204,10 @@ public abstract class WebSocketImplBase<S extends WebSocket> implements WebSocke
       sc = closeStatusCode;
       isClosed = closed;
     }
-    return isClosed ? (sc == null ? 1006 : sc) : sc;
+    if (isClosed && sc == null) {
+      return 1006;
+    }
+    return sc;
   }
 
   @Override

@@ -67,6 +67,7 @@ public class HttpServerConnectionInitializer {
   private final int maxFormAttributeSize;
   private final int maxFormFields;
   private final int maxFormBufferedBytes;
+  private final QueryParamDecoderConfig queryParamDecoderConfig;
   private final Http1ServerConfig http1Config;
   private final Http2ServerConfig http2Config;
   private final boolean registerWebSocketWriteHandlers;
@@ -92,6 +93,7 @@ public class HttpServerConnectionInitializer {
                                   int maxFormAttributeSize,
                                   int maxFormFields,
                                   int maxFormBufferedBytes,
+                                  QueryParamDecoderConfig queryParamDecoderConfig,
                                   Http1ServerConfig http1Config,
                                   Http2ServerConfig http2Config,
                                   boolean registerWebSocketWriteHandlers,
@@ -159,6 +161,7 @@ public class HttpServerConnectionInitializer {
     this.maxFormAttributeSize = maxFormAttributeSize;
     this.maxFormFields = maxFormFields;
     this.maxFormBufferedBytes = maxFormBufferedBytes;
+    this.queryParamDecoderConfig = queryParamDecoderConfig;
     this.http1Config = http1Config;
     this.http2Config = http2Config;
     this.connectionHandler = connectionHandler;
@@ -270,10 +273,10 @@ public class HttpServerConnectionInitializer {
    * @return the name of the handler to use
    */
   private static String computeChannelName(ChannelPipeline pipeline) {
-    if (pipeline.get(ChunkedWriteHandler.class) != null) {
-      return "chunkedWriter";
-    } else if (pipeline.get(IdleStateHandler.class) != null) {
+    if (pipeline.get(IdleStateHandler.class) != null) {
       return "idle";
+    } else if (pipeline.get(ChunkedWriteHandler.class) != null) {
+      return "chunkedWriter";
     } else {
       return "handler";
     }
@@ -307,6 +310,7 @@ public class HttpServerConnectionInitializer {
         maxFormAttributeSize,
         maxFormFields,
         maxFormBufferedBytes,
+        queryParamDecoderConfig,
         http1Config,
         registerWebSocketWriteHandlers,
         webSocketConfig,

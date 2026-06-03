@@ -220,6 +220,7 @@ public class TcpHttpServer implements HttpServerInternal {
     Handler<Throwable> h = exceptionHandler;
     Handler<Throwable> exceptionHandler = h != null ? h : DEFAULT_EXCEPTION_HANDLER;
     server.exceptionHandler(exceptionHandler);
+    QueryParamDecoderConfig queryParamDecoderConfig = config.getQueryParamConfig() != null ? config.getQueryParamConfig() : new QueryParamDecoderConfig();
     Http1ServerConfig http1Config = config.getVersions().contains(HttpVersion.HTTP_1_0) || config.getVersions().contains(HttpVersion.HTTP_1_1) ? config.getHttp1Config() != null ? config.getHttp1Config() : new Http1ServerConfig() : null;
     Http2ServerConfig http2Config = config.getVersions().contains(HttpVersion.HTTP_2) ? config.getHttp2Config() != null ? config.getHttp2Config() : new Http2ServerConfig() : null;
     server.connectHandler(so -> {
@@ -241,6 +242,8 @@ public class TcpHttpServer implements HttpServerInternal {
 
       ObservabilityConfig observabilityConfig = config.getObservabilityConfig();
 
+      FormDecoderConfig formDecoderConfig = config.getFormDecoderConfig() != null ? config.getFormDecoderConfig() : new FormDecoderConfig();
+
       List<CompressionOptions> compressors = compression != null ? compression.getCompressors() : null;
       HttpServerConnectionInitializer initializer = new HttpServerConnectionInitializer(
         listenContext,
@@ -255,9 +258,10 @@ public class TcpHttpServer implements HttpServerInternal {
         compressors != null ? compressors.toArray(new CompressionOptions[0]) : null,
         compression != null ? compression.getContentSizeThreshold() : 0,
         config.isHandle100ContinueAutomatically(),
-        config.getMaxFormAttributeSize(),
-        config.getMaxFormFields(),
-        config.getMaxFormBufferedBytes(),
+        formDecoderConfig.getMaxAttributeSize(),
+        formDecoderConfig.getMaxFields(),
+        formDecoderConfig.getMaxBufferedBytes(),
+        queryParamDecoderConfig,
         http1Config,
         http2Config,
         registerWebSocketWriteHandlers,

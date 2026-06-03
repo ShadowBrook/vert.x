@@ -16,10 +16,12 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static io.vertx.core.net.TCPSSLOptions.DEFAULT_SO_LINGER;
+import io.vertx.codegen.annotations.Unstable;
 
 /**
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
+@Unstable
 public class TcpConfig extends TransportConfig {
 
   private int sendBufferSize;
@@ -53,6 +55,7 @@ public class TcpConfig extends TransportConfig {
     reuseAddress = NetworkOptions.DEFAULT_REUSE_ADDRESS;
     trafficClass = NetworkOptions.DEFAULT_TRAFFIC_CLASS;
     soReusePort = NetworkOptions.DEFAULT_REUSE_PORT;
+    soKeepAlive = TCPSSLOptions.DEFAULT_TCP_KEEP_ALIVE;
     soLinger = DEFAULT_SO_LINGER;
     options = null;
   }

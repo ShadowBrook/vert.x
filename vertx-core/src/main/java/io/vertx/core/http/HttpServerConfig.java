@@ -25,6 +25,7 @@ import java.util.*;
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
 @DataObject
+@Unstable
 public class HttpServerConfig {
 
   /**
@@ -60,9 +61,8 @@ public class HttpServerConfig {
   }
 
   private Set<HttpVersion> versions;
-  private int maxFormAttributeSize;
-  private int maxFormFields;
-  private int maxFormBufferedBytes;
+  private FormDecoderConfig formDecoderConfig;
+  private QueryParamDecoderConfig queryParamDecoderConfig;
   private boolean handle100ContinueAutomatically;
   private boolean strictThreadMode;
   private ObservabilityConfig observabilityConfig;
@@ -118,10 +118,14 @@ public class HttpServerConfig {
         .setTracingPolicy(options.getTracingPolicy());
     }
 
+    FormDecoderConfig formDecoderConfig = new FormDecoderConfig()
+      .setMaxAttributeSize(options.getMaxFormAttributeSize())
+      .setMaxFields(options.getMaxFormFields())
+      .setMaxFields(options.getMaxFormFields())
+      .setMaxBufferedBytes(options.getMaxFormBufferedBytes());
+
     this.versions = versions;
-    this.maxFormAttributeSize = options.getMaxFormAttributeSize();
-    this.maxFormFields = options.getMaxFormFields();
-    this.maxFormBufferedBytes = options.getMaxFormBufferedBytes();
+    this.formDecoderConfig = formDecoderConfig;
     this.handle100ContinueAutomatically = options.isHandle100ContinueAutomatically();
     this.strictThreadMode = options.getStrictThreadMode();
     this.observabilityConfig = observabilityConfig;
@@ -138,9 +142,8 @@ public class HttpServerConfig {
    */
   public HttpServerConfig() {
     this.versions = EnumSet.of(HttpVersion.HTTP_1_1, HttpVersion.HTTP_2);
-    this.maxFormAttributeSize = HttpServerOptions.DEFAULT_MAX_FORM_ATTRIBUTE_SIZE;
-    this.maxFormFields = HttpServerOptions.DEFAULT_MAX_FORM_FIELDS;
-    this.maxFormBufferedBytes = HttpServerOptions.DEFAULT_MAX_FORM_BUFFERED_SIZE;
+    this.formDecoderConfig = null;
+    this.queryParamDecoderConfig = null;
     this.handle100ContinueAutomatically = HttpServerOptions.DEFAULT_HANDLE_100_CONTINE_AUTOMATICALLY;
     this.strictThreadMode = HttpServerOptions.DEFAULT_STRICT_THREAD_MODE_STRICT;
     this.observabilityConfig = null;
@@ -160,9 +163,8 @@ public class HttpServerConfig {
    */
   public HttpServerConfig(HttpServerConfig other) {
     this.versions = EnumSet.copyOf(other.versions);
-    this.maxFormAttributeSize = other.maxFormAttributeSize;
-    this.maxFormFields = other.maxFormFields;
-    this.maxFormBufferedBytes = other.maxFormBufferedBytes;
+    this.formDecoderConfig = other.formDecoderConfig != null ? new FormDecoderConfig(other.formDecoderConfig) : null;
+    this.queryParamDecoderConfig = other.queryParamDecoderConfig != null ? new QueryParamDecoderConfig(other.queryParamDecoderConfig) : null;
     this.handle100ContinueAutomatically = other.handle100ContinueAutomatically;
     this.strictThreadMode = other.strictThreadMode;
     this.observabilityConfig = other.observabilityConfig != null ? new ObservabilityConfig(other.observabilityConfig) : null;
@@ -360,57 +362,39 @@ public class HttpServerConfig {
     return this;
   }
 
-  /**
-   * @return Returns the maximum size of a form attribute
-   */
-  public int getMaxFormAttributeSize() {
-    return maxFormAttributeSize;
+  public FormDecoderConfig getFormDecoderConfig() {
+    return formDecoderConfig;
   }
 
-  /**
-   * Set the maximum size of a form attribute. Set to {@code -1} to allow unlimited length
-   *
-   * @param maxSize the new maximum size
-   * @return a reference to this, so the API can be used fluently
-   */
-  public HttpServerConfig setMaxFormAttributeSize(int maxSize) {
-    this.maxFormAttributeSize = maxSize;
+  public HttpServerConfig setFormDecoderConfig(FormDecoderConfig formDecoderConfig) {
+    this.formDecoderConfig = formDecoderConfig;
     return this;
   }
 
   /**
-   * @return Returns the maximum number of form fields
+   * @return the configuration for parsing HTTP request query parameters, when the configuration is {@code null}, the default configuration
+   * is used:
+   *
+   * <ul>
+   *   <li>{@link QueryParamDecoderConfig#DEFAULT_MAX_SIZE}</li>
+   *   <li>{@link QueryParamDecoderConfig#DEFAULT_CHARSET}</li>
+   *   <li>{@link QueryParamDecoderConfig#DEFAULT_USE_SEMICOLON_AS_DELIMITER}</li>
+   * </ul>
+   *
+   * @see HttpServerRequest#params()
    */
-  public int getMaxFormFields() {
-    return maxFormFields;
+  public QueryParamDecoderConfig getQueryParamConfig() {
+    return queryParamDecoderConfig;
   }
 
   /**
-   * Set the maximum number of fields of a form. Set to {@code -1} to allow unlimited number of attributes
+   * Set the configuration for parsing HTTP request query parameters.
    *
-   * @param maxFormFields the new maximum
+   * @param queryParamDecoderConfig the configuration
    * @return a reference to this, so the API can be used fluently
    */
-  public HttpServerConfig setMaxFormFields(int maxFormFields) {
-    this.maxFormFields = maxFormFields;
-    return this;
-  }
-
-  /**
-   * @return Returns the maximum number of bytes a server can buffer when decoding a form
-   */
-  public int getMaxFormBufferedBytes() {
-    return maxFormBufferedBytes;
-  }
-
-  /**
-   * Set the maximum number of bytes a server can buffer when decoding a form. Set to {@code -1} to allow unlimited length
-   *
-   * @param maxFormBufferedBytes the new maximum
-   * @return a reference to this, so the API can be used fluently
-   */
-  public HttpServerConfig setMaxFormBufferedBytes(int maxFormBufferedBytes) {
-    this.maxFormBufferedBytes = maxFormBufferedBytes;
+  public HttpServerConfig setQueryParamConfig(QueryParamDecoderConfig queryParamDecoderConfig) {
+    this.queryParamDecoderConfig = queryParamDecoderConfig;
     return this;
   }
 
@@ -434,7 +418,6 @@ public class HttpServerConfig {
   /**
    * @return whether to use the strict thread mode.
    */
-  @Unstable("Experimental")
   public boolean getStrictThreadMode() {
     return strictThreadMode;
   }
@@ -446,7 +429,6 @@ public class HttpServerConfig {
    * @param strictThreadMode whether to use the strict thread mode
    * @return a reference to this, so the API can be used fluently
    */
-  @Unstable("Experimental")
   public HttpServerConfig setStrictThreadMode(boolean strictThreadMode) {
     this.strictThreadMode = strictThreadMode;
     return this;

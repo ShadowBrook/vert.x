@@ -296,6 +296,24 @@ public class NetTest {
     assertEquals(options, options.setSslHandshakeTimeout(randLong));
     assertEquals(randLong, options.getSslHandshakeTimeout());
     assertIllegalArgumentException(() -> options.setSslHandshakeTimeout(-123));
+
+    assertEquals(NetClientOptions.DEFAULT_TCP_KEEAPLIVE_IDLE_SECONDS, options.getTcpKeepAliveIdleSeconds());
+    rand = TestUtils.randomPositiveInt();
+    assertEquals(options, options.setTcpKeepAliveIdleSeconds(rand));
+    assertEquals(rand, options.getTcpKeepAliveIdleSeconds());
+    assertIllegalArgumentException(() -> options.setTcpKeepAliveIdleSeconds(-123));
+
+    assertEquals(NetClientOptions.DEFAULT_TCP_KEEAPLIVE_COUNT, options.getTcpKeepAliveCount());
+    rand = TestUtils.randomPositiveInt();
+    assertEquals(options, options.setTcpKeepAliveCount(rand));
+    assertEquals(rand, options.getTcpKeepAliveCount());
+    assertIllegalArgumentException(() -> options.setTcpKeepAliveCount(-123));
+
+    assertEquals(NetClientOptions.DEFAULT_TCP_KEEAPLIVE_INTERVAL_SECONDS, options.getTcpKeepAliveIntervalSeconds());
+    rand = TestUtils.randomPositiveInt();
+    assertEquals(options, options.setTcpKeepAliveIntervalSeconds(rand));
+    assertEquals(rand, options.getTcpKeepAliveIntervalSeconds());
+    assertIllegalArgumentException(() -> options.setTcpKeepAliveIntervalSeconds(-123));
   }
 
   @Test
@@ -418,6 +436,24 @@ public class NetTest {
     assertEquals(options, options.setProxyProtocolTimeout(randomProxyTimeout));
     assertEquals(randomProxyTimeout, options.getProxyProtocolTimeout());
     assertIllegalArgumentException(() -> options.setProxyProtocolTimeout(-123));
+
+    assertEquals(NetServerOptions.DEFAULT_TCP_KEEAPLIVE_IDLE_SECONDS, options.getTcpKeepAliveIdleSeconds());
+    rand = TestUtils.randomPositiveInt();
+    assertEquals(options, options.setTcpKeepAliveIdleSeconds(rand));
+    assertEquals(rand, options.getTcpKeepAliveIdleSeconds());
+    assertIllegalArgumentException(() -> options.setTcpKeepAliveIdleSeconds(-123));
+
+    assertEquals(NetServerOptions.DEFAULT_TCP_KEEAPLIVE_COUNT, options.getTcpKeepAliveCount());
+    rand = TestUtils.randomPositiveInt();
+    assertEquals(options, options.setTcpKeepAliveCount(rand));
+    assertEquals(rand, options.getTcpKeepAliveCount());
+    assertIllegalArgumentException(() -> options.setTcpKeepAliveCount(-123));
+
+    assertEquals(NetServerOptions.DEFAULT_TCP_KEEAPLIVE_INTERVAL_SECONDS, options.getTcpKeepAliveIntervalSeconds());
+    rand = TestUtils.randomPositiveInt();
+    assertEquals(options, options.setTcpKeepAliveIntervalSeconds(rand));
+    assertEquals(rand, options.getTcpKeepAliveIntervalSeconds());
+    assertIllegalArgumentException(() -> options.setTcpKeepAliveIntervalSeconds(-123));
   }
 
   @Test
@@ -873,8 +909,6 @@ public class NetTest {
 
   @Test
   public void testWriteHandlerFailure() throws Exception {
-    // Todo : investigate this
-    Assume.assumeFalse(TRANSPORT == Transport.IO_URING);
     AtomicReference<NetSocket> serverSocket = new AtomicReference<>();
     server.connectHandler(socket -> {
       serverSocket.set(socket);
@@ -3611,7 +3645,6 @@ public class NetTest {
   }
 
   private void testIdleTimeoutSendChunkedFile(Checkpoint checkpoint, boolean idleOnServer) throws Exception {
-    Assume.assumeFalse(TRANSPORT == Transport.IO_URING);
     int expected = 16 * 1024 * 1024; // We estimate this will take more than 200ms to transfer with a 1ms pause in chunks
     File sent = TestUtils.tmpFile(".dat", expected);
     AtomicReference<AsyncResult<Void>> sendResult = new AtomicReference<>();
@@ -3662,6 +3695,7 @@ public class NetTest {
 
   @Test
   public void testHalfCloseCallsEndHandlerAfterBuffersAreDelivered(Checkpoint checkpoint) throws Exception {
+    Assume.assumeFalse("Intermittent failure with io_uring", TRANSPORT == Transport.IO_URING);
     // Synchronized on purpose
     StringBuffer expected = new StringBuffer();
     server.connectHandler(so -> {
@@ -4167,6 +4201,21 @@ public class NetTest {
         assertTrue(err instanceof ConnectTimeoutException);
         checkpoint.succeed();
       }));
+  }
+
+  @Test
+  public void testDisableConnectTimeout() throws Exception {
+    Vertx vertx = Vertx.vertx();
+    Future<NetSocket> fut;
+    try {
+      NetClient client = vertx.createNetClient(new NetClientOptions().setConnectTimeout(0));
+      fut = client.connect(1234, NON_ROUTABLE_HOST);
+      Thread.sleep(1000);
+      assertFalse(fut.isComplete());
+    } finally {
+      vertx.close().await();
+    }
+    assertWaitUntil(fut::failed);
   }
 
   @Test

@@ -1,6 +1,5 @@
 package io.vertx.tests.http;
 
-import io.vertx.core.Future;
 import io.vertx.core.http.Http2Settings;
 import io.vertx.core.http.HttpClientAgent;
 import io.vertx.core.http.HttpClientOptions;
@@ -10,10 +9,9 @@ import io.vertx.core.http.HttpServerOptions;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.PoolOptions;
 import io.vertx.test.core.VertxTestBase;
-import io.vertx.test.http.HttpConfig;
+import io.vertx.test.http.HttpConfigurator;
 import org.junit.Test;
 
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -38,7 +36,7 @@ public class HttpPoolCapacityTest extends VertxTestBase {
   }
 
   public List<HttpVersion> testSome(int http1xPoolSize, int http2PoolSize, int http1Concurrency, int http2Concurrency, int numberOfRequests) throws Exception {
-    HttpServerOptions http2Options = HttpConfig.H2.CODEC.createBaseServerOptions();
+    HttpServerOptions http2Options = HttpConfigurator.H2.CODEC.createBaseServerOptions();
     HttpServerOptions http1Options = new HttpServerOptions(http2Options).setUseAlpn(false);
     http2Options.setInitialSettings(new Http2Settings().setMaxConcurrentStreams(http2Concurrency));
     HttpServer http1Server = vertx.createHttpServer(http1Options);
@@ -50,7 +48,7 @@ public class HttpPoolCapacityTest extends VertxTestBase {
     http1Server.listen().await();
     http2Server.listen().await();
 
-    HttpClientOptions clientOptions = HttpConfig.H2.CODEC.createBaseClientOptions();
+    HttpClientOptions clientOptions = HttpConfigurator.H2.CODEC.createBaseClientOptions();
     clientOptions.setPipelining(true);
     clientOptions.setPipeliningLimit(http1Concurrency);
     HttpClientAgent client = vertx.createHttpClient(clientOptions, new PoolOptions()

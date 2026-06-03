@@ -17,19 +17,17 @@ import io.netty.handler.codec.quic.QuicStreamResetException;
 import io.netty.util.NetUtil;
 import io.vertx.core.Context;
 import io.vertx.core.Future;
-import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.*;
 import io.vertx.core.internal.VertxInternal;
-import io.vertx.core.net.QuicConnection;
-import io.vertx.core.net.QuicServer;
-import io.vertx.core.net.QuicStream;
 import io.vertx.core.net.ServerSSLOptions;
 import io.vertx.core.net.SocketAddress;
+import io.vertx.core.transport.Transport;
 import io.vertx.test.core.VertxTestBase;
 import io.vertx.test.tls.Cert;
 import io.vertx.test.core.TestUtils;
 import org.junit.Assert;
+import org.junit.Assume;
 import org.junit.Test;
 
 import java.net.InetSocketAddress;
@@ -37,10 +35,8 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -174,6 +170,8 @@ public class Http3ServerTest extends VertxTestBase {
 
   @Test
   public void testServerShutdown() throws Exception{
+    // See https://github.com/netty/netty/issues/16718
+    Assume.assumeFalse("Not supported yet with io_uring", TRANSPORT == Transport.IO_URING);
     testServerConnectionShutdown(false);
   }
 

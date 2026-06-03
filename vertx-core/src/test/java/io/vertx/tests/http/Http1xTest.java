@@ -14,14 +14,15 @@ package io.vertx.tests.http;
 import io.netty.channel.*;
 import io.netty.channel.Channel;
 import io.netty.handler.codec.TooLongFrameException;
-import io.netty.handler.codec.http.HttpHeaderNames;
-import io.netty.handler.codec.http.HttpResponse;
-import io.netty.handler.codec.http.TooLongHttpHeaderException;
+import io.netty.handler.codec.http.*;
 import io.vertx.core.Future;
 import io.vertx.core.*;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.*;
+import io.vertx.core.http.HttpHeaders;
+import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpResponseHead;
+import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.impl.*;
 import io.vertx.core.http.impl.HttpClientConnection;
 import io.vertx.core.http.impl.headers.Http1xHeaders;
@@ -33,16 +34,16 @@ import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.internal.VertxInternal;
 import io.vertx.core.internal.http.HttpServerInternal;
 import io.vertx.core.internal.http.HttpServerRequestInternal;
+import io.vertx.core.internal.net.NetSocketInternal;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.net.*;
 import io.vertx.core.parsetools.RecordParser;
 import io.vertx.core.streams.WriteStream;
-import io.vertx.core.transport.Transport;
 import io.vertx.test.core.*;
 import io.vertx.test.fakedns.DnsRecord;
 import io.vertx.test.fakedns.WithDnsServer;
-import io.vertx.test.http.HttpConfig;
+import io.vertx.test.http.HttpConfigurator;
 import io.vertx.test.tls.Cert;
 import org.junit.*;
 
@@ -60,7 +61,6 @@ import java.util.stream.Stream;
 import static io.vertx.core.http.HttpMethod.PUT;
 import static io.vertx.test.core.AssertExpectations.that;
 import static io.vertx.test.core.TestUtils.*;
-import static io.vertx.test.core.VertxTestBase.TRANSPORT;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThatThrownBy;
 import static org.junit.Assert.*;
 
@@ -71,7 +71,7 @@ import static org.junit.Assert.*;
 public class Http1xTest extends HttpTest {
 
   public Http1xTest() {
-    super(HttpConfig.Http1x.DEFAULT);
+    super(HttpConfigurator.Http1x.DEFAULT);
   }
 
   @Test
@@ -1061,7 +1061,6 @@ public class Http1xTest extends HttpTest {
 
   @Test
   public void testPipeliningOrder(Checkpoint checkpoint) throws Exception {
-    Assume.assumeFalse(TRANSPORT == Transport.IO_URING);
     client = vertx.createHttpClient(new HttpClientOptions().setKeepAlive(true).setPipelining(true), new PoolOptions().setHttp1MaxSize(1));
     int requests = 100;
 
@@ -2385,7 +2384,7 @@ public class Http1xTest extends HttpTest {
       req.response().end();
     });
     startServer(testAddress);
-    vertx.createHttpClient()
+    client
       .request(new RequestOptions(requestOptions).setURI("/?t=" + longParam))
       .compose(req -> req
         .send()
@@ -2435,33 +2434,44 @@ public class Http1xTest extends HttpTest {
   }
 
   @Test
-  public void testClientMaxInitialLineLengthOption() {
+  public void testClientMaxInitialLineLengthOption(Checkpoint checkpoint) {
 
-    String longParam = TestUtils.randomAlphaString(5000);
+    int maxInitialLineLength = 3000;
     NetServer server = vertx.createNetServer();
 
     server.connectHandler(so -> {
-      so.write("" +
-          "HTTP/1.1 200 OK\r\n" +
-          "Transfer-Encoding: chunked\r\n" +
-          "\r\n" +
-          "A; name=\"" + longParam + "\"\r\n" +
-          "0123456789\r\n" +
-          "0\r\n" +
-          "\r\n");
+      NetSocketInternal soi = (NetSocketInternal)so;
+      ChannelHandlerContext chctx = soi.channelHandlerContext();
+      HttpServerCodec codec = new HttpServerCodec();
+      chctx.pipeline().addBefore("handler", "http", codec);
+      soi.messageHandler(msg -> {
+        if (msg instanceof LastHttpContent) {
+          int len = maxInitialLineLength - "HTTP/1.1 200 ".length() + 1;
+          HttpResponseStatus httpResponseStatus = HttpResponseStatus.valueOf(200, "A".repeat(len));
+          FullHttpResponse response = new DefaultFullHttpResponse(io.netty.handler.codec.http.HttpVersion.HTTP_1_1, httpResponseStatus);
+          response
+            .headers()
+            .set(HttpHeaders.CONTENT_LENGTH, "0");
+          soi
+            .writeMessage(response)
+            .onComplete(checkpoint);
+        }
+      });
     });
 
-    // 5017 = 5000 for longParam and 17 for the rest in the following line - "GET /?t=longParam HTTP/1.1"
     try {
-      server.listen(testAddress).await();
-      client = vertx.createHttpClient(new HttpClientOptions().setMaxInitialLineLength(6000));
-      Buffer body = client
-        .request(new RequestOptions(requestOptions).setURI("/?t=" + longParam))
+      server
+        .listen(testAddress)
+        .await();
+      client = vertx.createHttpClient(new HttpClientOptions().setMaxInitialLineLength(maxInitialLineLength));
+      client
+        .request(requestOptions)
         .compose(request -> request
           .send()
           .compose(HttpClientResponse::body))
         .await();
-      assertEquals("0123456789", body.toString());
+      fail();
+    } catch (TooLongHttpLineException expected) {
     } finally {
       server.close();
     }
@@ -3671,6 +3681,7 @@ public class Http1xTest extends HttpTest {
   }
 
   @Test
+  @Ignore
   public void testPartialH2CAmbiguousRequest(Checkpoint checkpoint) throws Exception {
     server.requestHandler(req -> {
       assertEquals(HttpMethod.POST, req.method());

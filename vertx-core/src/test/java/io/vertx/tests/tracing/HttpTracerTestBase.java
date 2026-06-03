@@ -11,14 +11,13 @@
 package io.vertx.tests.tracing;
 
 import io.vertx.core.Context;
-import io.vertx.core.Future;
 import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.*;
 import io.vertx.core.spi.tracing.SpanKind;
 import io.vertx.core.spi.tracing.TagExtractor;
 import io.vertx.core.spi.tracing.VertxTracer;
-import io.vertx.test.http.HttpConfig;
+import io.vertx.test.http.HttpConfigurator;
 import io.vertx.core.internal.ContextInternal;
 import io.vertx.test.core.ContextLocalHelper;
 import io.vertx.core.spi.context.storage.ContextLocal;
@@ -39,7 +38,7 @@ public abstract class HttpTracerTestBase extends SimpleHttpTest {
   private VertxTracer tracer;
   private ContextLocal<Object> key;
 
-  protected HttpTracerTestBase(HttpConfig config) {
+  protected HttpTracerTestBase(HttpConfigurator config) {
     super(config, ReportMode.FORBIDDEN);
   }
 

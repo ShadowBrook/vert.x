@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2024 Contributors to the Eclipse Foundation
+ * Copyright (c) 2011-2026 Contributors to the Eclipse Foundation
  *
  * This program and the accompanying materials are made available under the
  * terms of the Eclipse Public License 2.0 which is available at
@@ -8,6 +8,7 @@
  *
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
  */
+
 package io.vertx.core.impl.transports;
 
 import io.netty.bootstrap.Bootstrap;
@@ -16,6 +17,7 @@ import io.netty.channel.*;
 import io.netty.channel.socket.DatagramChannel;
 import io.netty.channel.socket.InternetProtocolFamily;
 import io.netty.channel.unix.DomainSocketAddress;
+import io.netty.channel.unix.UnixChannelOption;
 import io.netty.channel.uring.*;
 import io.vertx.core.datagram.DatagramSocketOptions;
 import io.vertx.core.net.TcpConfig;
@@ -61,18 +63,13 @@ public class IoUringTransport implements Transport {
 
   @Override
   public boolean supportsDomainSockets() {
-    return false;
-  }
-
-  @Override
-  public boolean supportFileRegion() {
-    return false;
+    return true;
   }
 
   @Override
   public SocketAddress convert(io.vertx.core.net.SocketAddress address) {
     if (address.isDomainSocket()) {
-      throw new IllegalArgumentException("Domain socket not supported by IOUring transport");
+      return new DomainSocketAddress(address.path());
     }
     return Transport.super.convert(address);
   }
@@ -113,7 +110,7 @@ public class IoUringTransport implements Transport {
   @Override
   public ChannelFactory<? extends Channel> channelFactory(boolean domainSocket) {
     if (domainSocket) {
-      throw new IllegalArgumentException();
+      return IoUringDomainSocketChannel::new;
     }
     return IoUringSocketChannel::new;
   }
@@ -121,7 +118,7 @@ public class IoUringTransport implements Transport {
   @Override
   public ChannelFactory<? extends ServerChannel> serverChannelFactory(boolean domainSocket) {
     if (domainSocket) {
-      throw new IllegalArgumentException();
+      return IoUringServerDomainSocketChannel::new;
     }
     return IoUringServerSocketChannel::new;
   }
@@ -134,26 +131,42 @@ public class IoUringTransport implements Transport {
 
   @Override
   public void configure(TcpConfig config, boolean domainSocket, ServerBootstrap bootstrap) {
-    if (domainSocket) {
-      throw new IllegalArgumentException();
+    if (!domainSocket) {
+      bootstrap.option(UnixChannelOption.SO_REUSEPORT, config.isSoReusePort());
+      configOption(bootstrap, config, TcpOption.FASTOPEN, IoUringChannelOption.TCP_FASTOPEN);
+      configChildOption(bootstrap, config, TcpOption.USER_TIMEOUT, IoUringChannelOption.TCP_USER_TIMEOUT);
+      configChildOption(bootstrap, config, TcpOption.QUICKACK, IoUringChannelOption.TCP_QUICKACK);
+      configChildOption(bootstrap, config, TcpOption.CORK, IoUringChannelOption.TCP_CORK);
+      if (!EpollTransport.isNullOrZero(config, TcpOption.KEEPCNT)) {
+        configChildOption(bootstrap, config, TcpOption.KEEPCNT, IoUringChannelOption.TCP_KEEPCNT);
+      }
+      if (!EpollTransport.isNullOrZero(config, TcpOption.KEEPINTVL)) {
+        configChildOption(bootstrap, config, TcpOption.KEEPINTVL, IoUringChannelOption.TCP_KEEPINTVL);
+      }
+      if (!EpollTransport.isNullOrZero(config, TcpOption.KEEPIDLE)) {
+        configChildOption(bootstrap, config, TcpOption.KEEPIDLE, IoUringChannelOption.TCP_KEEPIDLE);
+      }
     }
-    bootstrap.option(IoUringChannelOption.SO_REUSEPORT, config.isSoReusePort());
-    configOption(bootstrap, config, TcpOption.FASTOPEN, IoUringChannelOption.TCP_FASTOPEN);
-    configChildOption(bootstrap, config, TcpOption.USER_TIMEOUT, IoUringChannelOption.TCP_USER_TIMEOUT);
-    configChildOption(bootstrap, config, TcpOption.QUICKACK, IoUringChannelOption.TCP_QUICKACK);
-    configChildOption(bootstrap, config, TcpOption.CORK, IoUringChannelOption.TCP_CORK);
-    Transport.super.configure(config, false, bootstrap);
+    Transport.super.configure(config, domainSocket, bootstrap);
   }
 
   @Override
   public void configure(TcpConfig config, boolean domainSocket, Bootstrap bootstrap) {
-    if (domainSocket) {
-      throw new IllegalArgumentException();
+    if (!domainSocket) {
+      configOption(bootstrap, config, TcpOption.FASTOPEN_CONNECT, IoUringChannelOption.TCP_FASTOPEN_CONNECT);
+      configOption(bootstrap, config, TcpOption.USER_TIMEOUT, IoUringChannelOption.TCP_USER_TIMEOUT);
+      configOption(bootstrap, config, TcpOption.QUICKACK, IoUringChannelOption.TCP_QUICKACK);
+      configOption(bootstrap, config, TcpOption.CORK, IoUringChannelOption.TCP_CORK);
+      if (!EpollTransport.isNullOrZero(config, TcpOption.KEEPCNT)) {
+        configOption(bootstrap, config, TcpOption.KEEPCNT, IoUringChannelOption.TCP_KEEPCNT);
+      }
+      if (!EpollTransport.isNullOrZero(config, TcpOption.KEEPINTVL)) {
+        configOption(bootstrap, config, TcpOption.KEEPINTVL, IoUringChannelOption.TCP_KEEPINTVL);
+      }
+      if (!EpollTransport.isNullOrZero(config, TcpOption.KEEPIDLE)) {
+        configOption(bootstrap, config, TcpOption.KEEPIDLE, IoUringChannelOption.TCP_KEEPIDLE);
+      }
     }
-    NioTransport.configOption(bootstrap, config, TcpOption.FASTOPEN_CONNECT, IoUringChannelOption.TCP_FASTOPEN_CONNECT);
-    NioTransport.configOption(bootstrap, config, TcpOption.USER_TIMEOUT, IoUringChannelOption.TCP_USER_TIMEOUT);
-    NioTransport.configOption(bootstrap, config, TcpOption.QUICKACK, IoUringChannelOption.TCP_QUICKACK);
-    NioTransport.configOption(bootstrap, config, TcpOption.CORK, IoUringChannelOption.TCP_CORK);
-    Transport.super.configure(config, false, bootstrap);
+    Transport.super.configure(config, domainSocket, bootstrap);
   }
 }

@@ -39,7 +39,7 @@ public class EpollTransport implements Transport {
 
   /**
    * Return the number of of pending TFO connections in SYN-RCVD state for TCP_FASTOPEN.
-   *
+   * <p>
    * {@see #setPendingFastOpenRequestsThreshold}
    */
   public static int getPendingFastOpenRequestsThreshold() {
@@ -138,6 +138,15 @@ public class EpollTransport implements Transport {
       configChildOption(bootstrap, config, TcpOption.USER_TIMEOUT, EpollChannelOption.TCP_USER_TIMEOUT);
       configChildOption(bootstrap, config, TcpOption.QUICKACK, EpollChannelOption.TCP_QUICKACK);
       configChildOption(bootstrap, config, TcpOption.CORK, EpollChannelOption.TCP_CORK);
+      if (!isNullOrZero(config, TcpOption.KEEPCNT)) {
+        configChildOption(bootstrap, config, TcpOption.KEEPCNT, EpollChannelOption.TCP_KEEPCNT);
+      }
+      if (!isNullOrZero(config, TcpOption.KEEPINTVL)) {
+        configChildOption(bootstrap, config, TcpOption.KEEPINTVL, EpollChannelOption.TCP_KEEPINTVL);
+      }
+      if (!isNullOrZero(config, TcpOption.KEEPIDLE)) {
+        configChildOption(bootstrap, config, TcpOption.KEEPIDLE, EpollChannelOption.TCP_KEEPIDLE);
+      }
     }
     Transport.super.configure(config, domainSocket, bootstrap);
   }
@@ -145,11 +154,32 @@ public class EpollTransport implements Transport {
   @Override
   public void configure(TcpConfig config, boolean domainSocket, Bootstrap bootstrap) {
     if (!domainSocket) {
-      NioTransport.configOption(bootstrap, config, TcpOption.FASTOPEN_CONNECT, EpollChannelOption.TCP_FASTOPEN_CONNECT);
-      NioTransport.configOption(bootstrap, config, TcpOption.USER_TIMEOUT, EpollChannelOption.TCP_USER_TIMEOUT);
-      NioTransport.configOption(bootstrap, config, TcpOption.QUICKACK, EpollChannelOption.TCP_QUICKACK);
-      NioTransport.configOption(bootstrap, config, TcpOption.CORK, EpollChannelOption.TCP_CORK);
+      configOption(bootstrap, config, TcpOption.FASTOPEN_CONNECT, EpollChannelOption.TCP_FASTOPEN_CONNECT);
+      configOption(bootstrap, config, TcpOption.USER_TIMEOUT, EpollChannelOption.TCP_USER_TIMEOUT);
+      configOption(bootstrap, config, TcpOption.QUICKACK, EpollChannelOption.TCP_QUICKACK);
+      configOption(bootstrap, config, TcpOption.CORK, EpollChannelOption.TCP_CORK);
+      if (!isNullOrZero(config, TcpOption.KEEPCNT)) {
+        configOption(bootstrap, config, TcpOption.KEEPCNT, EpollChannelOption.TCP_KEEPCNT);
+      }
+      if (!isNullOrZero(config, TcpOption.KEEPINTVL)) {
+        configOption(bootstrap, config, TcpOption.KEEPINTVL, EpollChannelOption.TCP_KEEPINTVL);
+      }
+      if (!isNullOrZero(config, TcpOption.KEEPIDLE)) {
+        configOption(bootstrap, config, TcpOption.KEEPIDLE, EpollChannelOption.TCP_KEEPIDLE);
+      }
     }
     Transport.super.configure(config, domainSocket, bootstrap);
+  }
+
+  /**
+   * Returns true if the given {@code optio} of {@code config} is not set or set to {@code 0}.
+   * @param config the config
+   * @param option a tcp option
+   * @return true if the given option is not set or set to {@code 0}.
+   * @param <T> the value type of the option, must be a {@link Number}.
+   */
+  static <T extends Number> boolean isNullOrZero(TcpConfig config, TcpOption<T> option) {
+    Number value;
+    return (value = config.getOption(option)) == null || value.longValue() == 0;
   }
 }

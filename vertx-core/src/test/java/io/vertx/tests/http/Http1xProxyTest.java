@@ -12,7 +12,6 @@ package io.vertx.tests.http;
 
 import io.netty.handler.proxy.ProxyConnectException;
 import io.vertx.core.Future;
-import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.*;
 import io.vertx.core.http.impl.CleanableHttpClient;
@@ -21,7 +20,6 @@ import io.vertx.core.net.ProxyOptions;
 import io.vertx.core.net.ProxyType;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.test.core.Checkpoint;
-import io.vertx.test.core.ProvidedBy;
 import io.vertx.test.core.TestUtils;
 import io.vertx.test.fakedns.DnsRecord;
 import io.vertx.test.fakedns.WithDnsServer;
@@ -29,7 +27,6 @@ import io.vertx.test.http.HttpTestBase2;
 import io.vertx.test.proxy.*;
 import io.vertx.test.tls.Cert;
 import org.assertj.core.api.Assertions;
-import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 
@@ -185,6 +182,52 @@ public class Http1xProxyTest extends HttpTestBase2 {
 
     assertNotNull("request did not go through proxy", proxy.lastUri());
     assertEquals("Host header doesn't contain target host", DEFAULT_HTTP_HOST_AND_PORT, proxy.lastRequestHeaders().get("Host"));
+  }
+
+  @WithProxy(kind = ProxyKind.HTTP)
+  @Test
+  public void testHttpProxyRequestCustomAuthorization() throws Exception {
+    String authorization = "Negotiate token";
+    client = vertx.createHttpClient(new HttpClientOptions()
+      .setProxyOptions(new ProxyOptions().setType(ProxyType.HTTP).setHost("localhost").setPort(proxy.port())
+        .setProxyAuthorization(authorization)));
+
+    foo(new RequestOptions()
+      .setHost(DEFAULT_HTTP_HOST)
+      .setPort(DEFAULT_HTTP_PORT)
+      .setURI("/"));
+
+    assertEquals(authorization, proxy.lastRequestHeaders().get("Proxy-Authorization"));
+  }
+
+  @WithProxy(kind = ProxyKind.HTTP)
+  @Test
+  public void testHttpsProxyRequestCustomAuthorization() throws Exception {
+    String authorization = "Negotiate token";
+
+    server = vertx.createHttpServer(createBaseServerOptions()
+      .setSsl(true)
+      .setKeyCertOptions(Cert.SERVER_JKS.get()));
+    server.requestHandler(req -> req.response().end());
+    startServer(SocketAddress.inetSocketAddress(DEFAULT_HTTPS_PORT, DEFAULT_HTTPS_HOST));
+
+    client = vertx.createHttpClient(new HttpClientOptions()
+      .setSsl(true)
+      .setTrustOptions(Cert.SERVER_JKS.get())
+      .setProxyOptions(new ProxyOptions().setType(ProxyType.HTTP).setHost("localhost").setPort(proxy.port())
+        .setProxyAuthorization(authorization)));
+
+    client.request(new RequestOptions()
+        .setHost(DEFAULT_HTTPS_HOST)
+        .setPort(DEFAULT_HTTPS_PORT)
+        .setURI("/"))
+      .compose(req -> req.send()
+        .expecting(HttpResponseExpectation.SC_OK))
+      .compose(HttpClientResponse::end)
+      .await();
+
+    assertEquals(HttpMethod.CONNECT, proxy.lastMethod());
+    assertEquals(authorization, proxy.lastRequestHeaders().get("Proxy-Authorization"));
   }
 
   @WithProxy(kind = ProxyKind.HTTP)
